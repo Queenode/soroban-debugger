@@ -1,14 +1,27 @@
-use crate::analyzer::upgrade::{CompatibilityReport, ExecutionDiff, UpgradeAnalyzer};
-use crate::analyzer::{security::SecurityAnalyzer, symbolic::SymbolicAnalyzer};
+use crate::analyzer::upgrade::{ CompatibilityReport, ExecutionDiff, UpgradeAnalyzer };
+use crate::analyzer::{ security::SecurityAnalyzer, symbolic::SymbolicAnalyzer };
 use crate::cli::args::{
-    AnalyzeArgs, CompareArgs, InspectArgs, InteractiveArgs, OptimizeArgs, ProfileArgs, RemoteArgs,
-    ReplArgs, ReplayArgs, RunArgs, ScenarioArgs, ServerArgs, SymbolicArgs, TuiArgs,
-    UpgradeCheckArgs, Verbosity,
+    AnalyzeArgs,
+    CompareArgs,
+    InspectArgs,
+    InteractiveArgs,
+    OptimizeArgs,
+    ProfileArgs,
+    RemoteArgs,
+    ReplArgs,
+    ReplayArgs,
+    RunArgs,
+    ScenarioArgs,
+    ServerArgs,
+    SymbolicArgs,
+    TuiArgs,
+    UpgradeCheckArgs,
+    Verbosity,
 };
 use crate::debugger::engine::DebuggerEngine;
 use crate::debugger::instruction_pointer::StepMode;
-use crate::history::{HistoryManager, RunHistory};
-use crate::inspector::events::{ContractEvent, EventInspector};
+use crate::history::{ HistoryManager, RunHistory };
+use crate::inspector::events::{ ContractEvent, EventInspector };
 use crate::logging;
 use crate::output::OutputWriter;
 use crate::repeat::RepeatRunner;
@@ -16,8 +29,8 @@ use crate::repl::ReplConfig;
 use crate::runtime::executor::ContractExecutor;
 use crate::simulator::SnapshotLoader;
 use crate::ui::formatter::Formatter;
-use crate::ui::{run_dashboard, DebuggerUI};
-use crate::{DebuggerError, Result};
+use crate::ui::{ run_dashboard, DebuggerUI };
+use crate::{ DebuggerError, Result };
 use miette::WrapErr;
 use std::fs;
 
@@ -54,12 +67,13 @@ fn print_verbose(message: impl AsRef<str>) {
 }
 
 fn budget_trend_stats_or_err(records: &[RunHistory]) -> Result<crate::history::BudgetTrendStats> {
-    crate::history::budget_trend_stats(records).ok_or_else(|| {
-        DebuggerError::ExecutionError(
-            "Failed to compute budget trend statistics for the selected dataset".to_string(),
-        )
-        .into()
-    })
+    crate::history
+        ::budget_trend_stats(records)
+        .ok_or_else(|| {
+            DebuggerError::ExecutionError(
+                "Failed to compute budget trend statistics for the selected dataset".to_string()
+            ).into()
+        })
 }
 
 #[derive(serde::Serialize)]
@@ -81,7 +95,7 @@ fn render_symbolic_report(report: &crate::analyzer::symbolic::SymbolicReport) ->
     let mut lines = vec![
         format!("Function: {}", report.function),
         format!("Paths explored: {}", report.paths_explored),
-        format!("Panics found: {}", report.panics_found),
+        format!("Panics found: {}", report.panics_found)
     ];
 
     if report.paths.is_empty() {
@@ -98,12 +112,7 @@ fn render_symbolic_report(report: &crate::analyzer::symbolic::SymbolicReport) ->
             (_, Some(panic)) => format!("panic {}", panic),
             _ => "unknown".to_string(),
         };
-        lines.push(format!(
-            "  {}. inputs={} -> {}",
-            idx + 1,
-            path.inputs,
-            outcome
-        ));
+        lines.push(format!("  {}. inputs={} -> {}", idx + 1, path.inputs, outcome));
     }
 
     lines.join("\n")
@@ -120,10 +129,7 @@ fn render_security_report(output: &AnalyzeCommandOutput) -> String {
         if let Some(result) = &dynamic.result {
             lines.push(format!("Dynamic execution result: {}", result));
         }
-        lines.push(format!(
-            "Dynamic trace entries captured: {}",
-            dynamic.trace_entries
-        ));
+        lines.push(format!("Dynamic trace entries captured: {}", dynamic.trace_entries));
         lines.push(String::new());
     }
 
@@ -142,13 +148,15 @@ fn render_security_report(output: &AnalyzeCommandOutput) -> String {
 
     lines.push(format!("Findings: {}", output.findings.len()));
     for (idx, finding) in output.findings.iter().enumerate() {
-        lines.push(format!(
-            "  {}. [{:?}] {} at {}",
-            idx + 1,
-            finding.severity,
-            finding.rule_id,
-            finding.location
-        ));
+        lines.push(
+            format!(
+                "  {}. [{:?}] {} at {}",
+                idx + 1,
+                finding.severity,
+                finding.rule_id,
+                finding.location
+            )
+        );
         lines.push(format!("     {}", finding.description));
         lines.push(format!("     Remediation: {}", finding.remediation));
     }
@@ -160,7 +168,7 @@ fn render_security_report(output: &AnalyzeCommandOutput) -> String {
 fn run_instruction_stepping(
     _engine: &mut DebuggerEngine,
     _function: &str,
-    _args: Option<&str>,
+    _args: Option<&str>
 ) -> Result<()> {
     print_info("Instruction stepping is not yet fully implemented");
     Ok(())
@@ -185,18 +193,20 @@ fn display_mock_call_log(calls: &[crate::runtime::executor::MockCallEntry]) {
     print_info("\n--- Mock Contract Calls ---");
     for (i, entry) in calls.iter().enumerate() {
         let status = if entry.mocked { "MOCKED" } else { "REAL" };
-        print_info(format!(
-            "{}. {} {} (args: {}) -> {}",
-            i + 1,
-            status,
-            entry.function,
-            entry.args_count,
-            if entry.returned.is_some() {
-                "returned"
-            } else {
-                "pending"
-            }
-        ));
+        print_info(
+            format!(
+                "{}. {} {} (args: {}) -> {}",
+                i + 1,
+                status,
+                entry.function,
+                entry.args_count,
+                if entry.returned.is_some() {
+                    "returned"
+                } else {
+                    "pending"
+                }
+            )
+        );
     }
 }
 
@@ -214,14 +224,15 @@ fn run_batch(args: &RunArgs, batch_file: &std::path::Path) -> Result<()> {
     print_info(format!("Loading contract: {:?}", contract));
     logging::log_loading_contract(&contract.to_string_lossy());
 
-    let wasm_bytes = fs::read(contract).map_err(|e| {
-        DebuggerError::WasmLoadError(format!("Failed to read WASM file at {:?}: {}", contract, e))
-    })?;
+    let wasm_bytes = fs
+        ::read(contract)
+        .map_err(|e| {
+            DebuggerError::WasmLoadError(
+                format!("Failed to read WASM file at {:?}: {}", contract, e)
+            )
+        })?;
 
-    print_success(format!(
-        "Contract loaded successfully ({} bytes)",
-        wasm_bytes.len()
-    ));
+    print_success(format!("Contract loaded successfully ({} bytes)", wasm_bytes.len()));
     logging::log_contract_loaded(wasm_bytes.len());
 
     print_info(format!("Loading batch file: {:?}", batch_file));
@@ -236,40 +247,49 @@ fn run_batch(args: &RunArgs, batch_file: &std::path::Path) -> Result<()> {
         logging::log_display(loaded_snapshot.format_summary(), logging::LogLevel::Info);
     }
 
-    print_info(format!(
-        "\nExecuting {} test cases in parallel for function: {}",
-        batch_items.len(),
-        function
-    ));
+    print_info(
+        format!(
+            "\nExecuting {} test cases in parallel for function: {}",
+            batch_items.len(),
+            function
+        )
+    );
     logging::log_execution_start(function, None);
 
-    let executor = crate::batch::BatchExecutor::new(wasm_bytes, function.clone());
+    let executor = crate::batch::BatchExecutor::new(wasm_bytes, function.clone())?;
     let results = executor.execute_batch(batch_items)?;
     let summary = crate::batch::BatchExecutor::summarize(&results);
 
     crate::batch::BatchExecutor::display_results(&results, &summary);
 
     if args.is_json_output() {
-        let output = serde_json::json!({
+        let output =
+            serde_json::json!({
             "results": results,
             "summary": summary,
         });
         logging::log_display(
-            serde_json::to_string_pretty(&output).map_err(|e| {
-                DebuggerError::FileError(format!("Failed to serialize output: {}", e))
-            })?,
-            logging::LogLevel::Info,
+            serde_json
+                ::to_string_pretty(&output)
+                .map_err(|e| {
+                    DebuggerError::FileError(format!("Failed to serialize output: {}", e))
+                })?,
+            logging::LogLevel::Info
         );
     }
 
     logging::log_execution_complete(&format!("{}/{} passed", summary.passed, summary.total));
 
     if summary.failed > 0 || summary.errors > 0 {
-        return Err(DebuggerError::ExecutionError(format!(
-            "Batch execution completed with failures: {} failed, {} errors",
-            summary.failed, summary.errors
-        ))
-        .into());
+        return Err(
+            DebuggerError::ExecutionError(
+                format!(
+                    "Batch execution completed with failures: {} failed, {} errors",
+                    summary.failed,
+                    summary.errors
+                )
+            ).into()
+        );
     }
 
     Ok(())
@@ -313,29 +333,25 @@ pub fn run(args: RunArgs, verbosity: Verbosity) -> Result<()> {
     output_writer.write(&format!("Loading contract: {:?}", contract))?;
     logging::log_loading_contract(&contract.to_string_lossy());
 
-    let wasm_file = crate::utils::wasm::load_wasm(contract)
+    let wasm_file = crate::utils::wasm
+        ::load_wasm(contract)
         .with_context(|| format!("Failed to read WASM file: {:?}", contract))?;
     let wasm_bytes = wasm_file.bytes;
     let wasm_hash = wasm_file.sha256_hash;
 
     if let Some(expected) = &args.expected_hash {
         if expected.to_lowercase() != wasm_hash {
-            return Err(crate::DebuggerError::ChecksumMismatch {
-                expected: expected.clone(),
-                actual: wasm_hash.clone(),
-            }
-            .into());
+            return Err(
+                (crate::DebuggerError::ChecksumMismatch {
+                    expected: expected.clone(),
+                    actual: wasm_hash.clone(),
+                }).into()
+            );
         }
     }
 
-    print_success(format!(
-        "Contract loaded successfully ({} bytes)",
-        wasm_bytes.len()
-    ));
-    output_writer.write(&format!(
-        "Contract loaded successfully ({} bytes)",
-        wasm_bytes.len()
-    ))?;
+    print_success(format!("Contract loaded successfully ({} bytes)", wasm_bytes.len()));
+    output_writer.write(&format!("Contract loaded successfully ({} bytes)", wasm_bytes.len()))?;
 
     if args.verbose || verbosity == Verbosity::Verbose {
         print_verbose(format!("SHA-256: {}", wasm_hash));
@@ -375,9 +391,15 @@ pub fn run(args: RunArgs, verbosity: Verbosity) -> Result<()> {
         print_info(format!("Importing storage from: {:?}", import_path));
         let imported = crate::inspector::storage::StorageState::import_from_file(import_path)?;
         print_success(format!("Imported {} storage entries", imported.len()));
-        initial_storage = Some(serde_json::to_string(&imported).map_err(|e| {
-            DebuggerError::StorageError(format!("Failed to serialize imported storage: {}", e))
-        })?);
+        initial_storage = Some(
+            serde_json
+                ::to_string(&imported)
+                .map_err(|e| {
+                    DebuggerError::StorageError(
+                        format!("Failed to serialize imported storage: {}", e)
+                    )
+                })?
+        );
     }
 
     if let Some(n) = args.repeat {
@@ -414,10 +436,11 @@ pub fn run(args: RunArgs, verbosity: Verbosity) -> Result<()> {
     // Remote mode is not yet implemented
 
     if args.remote.is_some() {
-        return Err(DebuggerError::ExecutionError(
-            "Remote mode not yet implemented in run command".to_string(),
-        )
-        .into());
+        return Err(
+            DebuggerError::ExecutionError(
+                "Remote mode not yet implemented in run command".to_string()
+            ).into()
+        );
     }
 
     // Execute locally with debugging
@@ -430,10 +453,7 @@ pub fn run(args: RunArgs, verbosity: Verbosity) -> Result<()> {
 
         if args.step_instructions {
             let step_mode = parse_step_mode(&args.step_mode);
-            print_info(format!(
-                "Starting instruction stepping in '{}' mode",
-                args.step_mode
-            ));
+            print_info(format!("Starting instruction stepping in '{}' mode", args.step_mode));
             engine.start_instruction_stepping(step_mode)?;
             run_instruction_stepping(&mut engine, function, parsed_args.as_deref())?;
             return Ok(());
@@ -457,10 +477,7 @@ pub fn run(args: RunArgs, verbosity: Verbosity) -> Result<()> {
             print_info(format!("\nGenerating unit test: {:?}", test_path));
             let test_code = crate::codegen::TestGenerator::generate(record, contract)?;
             crate::codegen::TestGenerator::write_to_file(test_path, &test_code, args.overwrite)?;
-            print_success(format!(
-                "Unit test generated successfully at {:?}",
-                test_path
-            ));
+            print_success(format!("Unit test generated successfully at {:?}", test_path));
         } else {
             print_warning("No execution record found to generate test.");
         }
@@ -469,7 +486,7 @@ pub fn run(args: RunArgs, verbosity: Verbosity) -> Result<()> {
     let storage_diff = crate::inspector::storage::StorageInspector::compute_diff(
         &storage_before,
         &storage_after,
-        &args.alert_on_change,
+        &args.alert_on_change
     );
     if !storage_diff.is_empty() || !args.alert_on_change.is_empty() {
         print_info("\n--- Storage Changes ---");
@@ -505,10 +522,7 @@ pub fn run(args: RunArgs, verbosity: Verbosity) -> Result<()> {
         print_info(format!("Exporting storage to: {:?}", export_path));
         let storage_snapshot = engine.executor().get_storage_snapshot()?;
         crate::inspector::storage::StorageState::export_to_file(&storage_snapshot, export_path)?;
-        print_success(format!(
-            "Exported {} storage entries",
-            storage_snapshot.len()
-        ));
+        print_success(format!("Exported {} storage entries", storage_snapshot.len()));
     }
 
     let mut json_events = None;
@@ -520,27 +534,27 @@ pub fn run(args: RunArgs, verbosity: Verbosity) -> Result<()> {
 
         // Convert runtime event objects into our inspector::events::ContractEvent via serde translation.
         // This is a generic, safe conversion as long as runtime events are serializable with sensible fields.
-        let converted_events: Vec<ContractEvent> =
-            match serde_json::to_value(&raw_events).and_then(serde_json::from_value) {
-                Ok(evts) => evts,
-                Err(e) => {
-                    // If conversion fails, fall back to attempting to stringify each raw event for display.
-                    print_warning(format!(
-                        "Failed to convert runtime events for structured display: {}",
-                        e
-                    ));
-                    // Fallback: attempt a best-effort stringification
-                    let fallback: Vec<ContractEvent> = raw_events
-                        .into_iter()
-                        .map(|r| ContractEvent {
-                            contract_id: None,
-                            topics: vec![],
-                            data: format!("{:?}", r),
-                        })
-                        .collect();
-                    fallback
-                }
-            };
+        let converted_events: Vec<ContractEvent> = match
+            serde_json::to_value(&raw_events).and_then(serde_json::from_value)
+        {
+            Ok(evts) => evts,
+            Err(e) => {
+                // If conversion fails, fall back to attempting to stringify each raw event for display.
+                print_warning(
+                    format!("Failed to convert runtime events for structured display: {}", e)
+                );
+                // Fallback: attempt a best-effort stringification
+                let fallback: Vec<ContractEvent> = raw_events
+                    .into_iter()
+                    .map(|r| ContractEvent {
+                        contract_id: None,
+                        topics: vec![],
+                        data: format!("{:?}", r),
+                    })
+                    .collect();
+                fallback
+            }
+        };
 
         // Determine filter: prefer repeatable --event-filter, fallback to legacy --filter-topic
         let filter_opt = if !args.event_filter.is_empty() {
@@ -569,12 +583,14 @@ pub fn run(args: RunArgs, verbosity: Verbosity) -> Result<()> {
     }
 
     if !args.storage_filter.is_empty() {
-        let storage_filter = crate::inspector::storage::StorageFilter::new(&args.storage_filter)
+        let storage_filter = crate::inspector::storage::StorageFilter
+            ::new(&args.storage_filter)
             .map_err(|e| DebuggerError::StorageError(format!("Invalid storage filter: {}", e)))?;
 
         print_info("\n--- Storage ---");
-        let inspector =
-            crate::inspector::storage::StorageInspector::with_state(storage_after.clone());
+        let inspector = crate::inspector::storage::StorageInspector::with_state(
+            storage_after.clone()
+        );
         inspector.display_filtered(&storage_filter);
     }
 
@@ -610,17 +626,20 @@ pub fn run(args: RunArgs, verbosity: Verbosity) -> Result<()> {
                     if let Some(access_type) = footprint_map.get(key) {
                         if let Some((entry, ttl)) = val_opt {
                             let key_str = format!("{:?}", **key);
-                            let storage_type =
-                                if key_str.contains("Temporary") || key_str.contains("temporary") {
-                                    crate::inspector::ledger::StorageType::Temporary
-                                } else if key_str.contains("Instance")
-                                    || key_str.contains("instance")
-                                    || key_str.contains("LedgerKeyContractInstance")
-                                {
-                                    crate::inspector::ledger::StorageType::Instance
-                                } else {
-                                    crate::inspector::ledger::StorageType::Persistent
-                                };
+                            let storage_type = if
+                                key_str.contains("Temporary") ||
+                                key_str.contains("temporary")
+                            {
+                                crate::inspector::ledger::StorageType::Temporary
+                            } else if
+                                key_str.contains("Instance") ||
+                                key_str.contains("instance") ||
+                                key_str.contains("LedgerKeyContractInstance")
+                            {
+                                crate::inspector::ledger::StorageType::Instance
+                            } else {
+                                crate::inspector::ledger::StorageType::Persistent
+                            };
 
                             use soroban_env_host::storage::AccessType;
                             let is_read = true; // Everything in the footprint is at least read
@@ -632,7 +651,7 @@ pub fn run(args: RunArgs, verbosity: Verbosity) -> Result<()> {
                                 storage_type,
                                 ttl.unwrap_or(0),
                                 is_read,
-                                is_write,
+                                is_write
                             );
                         }
                     }
@@ -649,7 +668,8 @@ pub fn run(args: RunArgs, verbosity: Verbosity) -> Result<()> {
     }
 
     if args.is_json_output() {
-        let mut output = serde_json::json!({
+        let mut output =
+            serde_json::json!({
             "status": "success",
             "result": result,
             "sha256": wasm_hash,
@@ -679,7 +699,7 @@ pub fn run(args: RunArgs, verbosity: Verbosity) -> Result<()> {
                             "returned": entry.returned,
                         })
                     })
-                    .collect(),
+                    .collect()
             );
         }
         if let Some(ref ledger) = json_ledger {
@@ -689,7 +709,8 @@ pub fn run(args: RunArgs, verbosity: Verbosity) -> Result<()> {
         match serde_json::to_string_pretty(&output) {
             Ok(json) => println!("{}", json),
             Err(e) => {
-                let err_output = serde_json::json!({
+                let err_output =
+                    serde_json::json!({
                     "status": "error",
                     "errors": [format!("Failed to serialize output: {}", e)]
                 });
@@ -703,12 +724,11 @@ pub fn run(args: RunArgs, verbosity: Verbosity) -> Result<()> {
     if let Some(trace_path) = &args.trace_output {
         print_info(format!("\nExporting execution trace to: {:?}", trace_path));
 
-        let args_str = parsed_args
-            .as_ref()
-            .map(|a| serde_json::to_string(a).unwrap_or_default());
+        let args_str = parsed_args.as_ref().map(|a| serde_json::to_string(a).unwrap_or_default());
 
-        let trace_events =
-            json_events.unwrap_or_else(|| engine.executor().get_events().unwrap_or_default());
+        let trace_events = json_events.unwrap_or_else(||
+            engine.executor().get_events().unwrap_or_default()
+        );
 
         let trace = build_execution_trace(
             function,
@@ -719,7 +739,7 @@ pub fn run(args: RunArgs, verbosity: Verbosity) -> Result<()> {
             budget,
             engine.executor(),
             &trace_events,
-            usize::MAX,
+            usize::MAX
         );
 
         if let Ok(json) = trace.to_json() {
@@ -744,7 +764,7 @@ fn build_execution_trace(
     budget: crate::inspector::budget::BudgetInfo,
     executor: &ContractExecutor,
     events: &[crate::inspector::events::ContractEvent],
-    replay_until: usize,
+    replay_until: usize
 ) -> crate::compare::ExecutionTrace {
     let mut trace_storage = std::collections::BTreeMap::new();
     for (k, v) in storage_after {
@@ -755,7 +775,8 @@ fn build_execution_trace(
         }
     }
 
-    let return_val = serde_json::from_str(result)
+    let return_val = serde_json
+        ::from_str(result)
         .unwrap_or_else(|_| serde_json::Value::String(result.to_string()));
 
     let mut call_sequence = Vec::new();
@@ -775,8 +796,9 @@ fn build_execution_trace(
             }
 
             let event_str = format!("{:?}", event);
-            if event_str.contains("ContractCall")
-                || (event_str.contains("call") && event.contract_id.is_some())
+            if
+                event_str.contains("ContractCall") ||
+                (event_str.contains("call") && event.contract_id.is_some())
             {
                 depth += 1;
                 call_sequence.push(crate::compare::trace::CallEntry {
@@ -784,8 +806,9 @@ fn build_execution_trace(
                     args: None,
                     depth,
                 });
-            } else if (event_str.contains("ContractReturn") || event_str.contains("return"))
-                && depth > 0
+            } else if
+                (event_str.contains("ContractReturn") || event_str.contains("return")) &&
+                depth > 0
             {
                 depth -= 1;
             }
@@ -827,25 +850,24 @@ fn run_dry_run(args: &RunArgs) -> Result<()> {
         .expect("contract is required for dry-run");
     print_info(format!("[DRY RUN] Loading contract: {:?}", contract));
 
-    let wasm_file = crate::utils::wasm::load_wasm(contract)
+    let wasm_file = crate::utils::wasm
+        ::load_wasm(contract)
         .with_context(|| format!("Failed to read WASM file: {:?}", contract))?;
     let wasm_bytes = wasm_file.bytes;
     let wasm_hash = wasm_file.sha256_hash;
 
     if let Some(expected) = &args.expected_hash {
         if expected.to_lowercase() != wasm_hash {
-            return Err(crate::DebuggerError::ChecksumMismatch {
-                expected: expected.clone(),
-                actual: wasm_hash.clone(),
-            }
-            .into());
+            return Err(
+                (crate::DebuggerError::ChecksumMismatch {
+                    expected: expected.clone(),
+                    actual: wasm_hash.clone(),
+                }).into()
+            );
         }
     }
 
-    print_success(format!(
-        "[DRY RUN] Contract loaded successfully ({} bytes)",
-        wasm_bytes.len()
-    ));
+    print_success(format!("[DRY RUN] Contract loaded successfully ({} bytes)", wasm_bytes.len()));
 
     if args.verbose {
         print_verbose(format!("[DRY RUN] SHA-256: {}", wasm_hash));
@@ -862,7 +884,7 @@ fn run_dry_run(args: &RunArgs) -> Result<()> {
 /// Get instruction counts from the debugger engine
 #[allow(dead_code)]
 fn get_instruction_counts(
-    engine: &DebuggerEngine,
+    engine: &DebuggerEngine
 ) -> Option<crate::runtime::executor::InstructionCounts> {
     // Try to get instruction counts from the executor
     engine.executor().get_instruction_counts().ok()
@@ -878,27 +900,20 @@ fn display_instruction_counts(counts: &crate::runtime::executor::InstructionCoun
     print_info("\n--- Instruction Count per Function ---");
 
     // Calculate percentages
-    let percentages: Vec<f64> = counts
-        .function_counts
+    let percentages: Vec<f64> = counts.function_counts
         .iter()
         .map(|(_, count)| {
-            if counts.total > 0 {
-                (*count as f64 / counts.total as f64) * 100.0
-            } else {
-                0.0
-            }
+            if counts.total > 0 { ((*count as f64) / (counts.total as f64)) * 100.0 } else { 0.0 }
         })
         .collect();
 
     // Find max widths for alignment
-    let max_func_width = counts
-        .function_counts
+    let max_func_width = counts.function_counts
         .iter()
         .map(|(name, _)| name.len())
         .max()
         .unwrap_or(20);
-    let max_count_width = counts
-        .function_counts
+    let max_count_width = counts.function_counts
         .iter()
         .map(|(_, count)| count.to_string().len())
         .max()
@@ -934,11 +949,13 @@ fn display_instruction_counts(counts: &crate::runtime::executor::InstructionCoun
 /// Execute the upgrade-check command
 pub fn upgrade_check(args: UpgradeCheckArgs) -> Result<()> {
     println!("Loading old contract: {:?}", args.old);
-    let old_wasm = fs::read(&args.old)
+    let old_wasm = fs
+        ::read(&args.old)
         .map_err(|e| miette::miette!("Failed to read old WASM file {:?}: {}", args.old, e))?;
 
     println!("Loading new contract: {:?}", args.new);
-    let new_wasm = fs::read(&args.new)
+    let new_wasm = fs
+        ::read(&args.new)
         .map_err(|e| miette::miette!("Failed to read new WASM file {:?}: {}", args.new, e))?;
 
     // Optionally run test inputs against both versions
@@ -951,17 +968,25 @@ pub fn upgrade_check(args: UpgradeCheckArgs) -> Result<()> {
     let old_path = args.old.to_string_lossy().to_string();
     let new_path = args.new.to_string_lossy().to_string();
 
-    let report =
-        UpgradeAnalyzer::analyze(&old_wasm, &new_wasm, &old_path, &new_path, execution_diffs)?;
+    let report = UpgradeAnalyzer::analyze(
+        &old_wasm,
+        &new_wasm,
+        &old_path,
+        &new_path,
+        execution_diffs
+    )?;
 
     let output = match args.output.as_str() {
-        "json" => serde_json::to_string_pretty(&report)
-            .map_err(|e| miette::miette!("Failed to serialize report: {}", e))?,
+        "json" =>
+            serde_json
+                ::to_string_pretty(&report)
+                .map_err(|e| miette::miette!("Failed to serialize report: {}", e))?,
         _ => format_text_report(&report),
     };
 
     if let Some(out_file) = &args.output_file {
-        fs::write(out_file, &output)
+        fs
+            ::write(out_file, &output)
             .map_err(|e| miette::miette!("Failed to write report to {:?}: {}", out_file, e))?;
         println!("Report written to {:?}", out_file);
     } else {
@@ -969,10 +994,12 @@ pub fn upgrade_check(args: UpgradeCheckArgs) -> Result<()> {
     }
 
     if !report.is_compatible {
-        return Err(miette::miette!(
-            "Contracts are not compatible: {} breaking change(s) detected",
-            report.breaking_changes.len()
-        ));
+        return Err(
+            miette::miette!(
+                "Contracts are not compatible: {} breaking change(s) detected",
+                report.breaking_changes.len()
+            )
+        );
     }
 
     Ok(())
@@ -982,11 +1009,16 @@ pub fn upgrade_check(args: UpgradeCheckArgs) -> Result<()> {
 fn run_test_inputs(
     inputs_json: &str,
     old_wasm: &[u8],
-    new_wasm: &[u8],
+    new_wasm: &[u8]
 ) -> Result<Vec<ExecutionDiff>> {
-    let inputs: serde_json::Map<String, serde_json::Value> =
-        serde_json::from_str(inputs_json)
-            .map_err(|e| miette::miette!("Invalid --test-inputs JSON (expected an object mapping function names to arg arrays): {}", e))?;
+    let inputs: serde_json::Map<String, serde_json::Value> = serde_json
+        ::from_str(inputs_json)
+        .map_err(|e|
+            miette::miette!(
+                "Invalid --test-inputs JSON (expected an object mapping function names to arg arrays): {}",
+                e
+            )
+        )?;
 
     let mut diffs = Vec::new();
 
@@ -1015,11 +1047,7 @@ fn invoke_wasm(wasm: &[u8], function: &str, args: &str) -> String {
         Err(e) => format!("Err(executor: {})", e),
         Ok(executor) => {
             let mut engine = DebuggerEngine::new(executor, vec![]);
-            let parsed = if args == "null" || args == "[]" {
-                None
-            } else {
-                Some(args.to_string())
-            };
+            let parsed = if args == "null" || args == "[]" { None } else { Some(args.to_string()) };
             match engine.execute(function, parsed.as_deref()) {
                 Ok(val) => format!("Ok({:?})", val),
                 Err(e) => format!("Err({})", e),
@@ -1038,18 +1066,11 @@ fn format_text_report(report: &CompatibilityReport) -> String {
     out.push_str(&format!("New: {}\n", report.new_wasm_path));
     out.push('\n');
 
-    let status = if report.is_compatible {
-        "COMPATIBLE"
-    } else {
-        "INCOMPATIBLE"
-    };
+    let status = if report.is_compatible { "COMPATIBLE" } else { "INCOMPATIBLE" };
     out.push_str(&format!("Status: {}\n", status));
 
     out.push('\n');
-    out.push_str(&format!(
-        "Breaking Changes ({}):\n",
-        report.breaking_changes.len()
-    ));
+    out.push_str(&format!("Breaking Changes ({}):\n", report.breaking_changes.len()));
     if report.breaking_changes.is_empty() {
         out.push_str("  (none)\n");
     } else {
@@ -1059,10 +1080,7 @@ fn format_text_report(report: &CompatibilityReport) -> String {
     }
 
     out.push('\n');
-    out.push_str(&format!(
-        "Non-Breaking Changes ({}):\n",
-        report.non_breaking_changes.len()
-    ));
+    out.push_str(&format!("Non-Breaking Changes ({}):\n", report.non_breaking_changes.len()));
     if report.non_breaking_changes.is_empty() {
         out.push_str("  (none)\n");
     } else {
@@ -1073,56 +1091,46 @@ fn format_text_report(report: &CompatibilityReport) -> String {
 
     if !report.execution_diffs.is_empty() {
         out.push('\n');
-        out.push_str(&format!(
-            "Execution Diffs ({}):\n",
-            report.execution_diffs.len()
-        ));
+        out.push_str(&format!("Execution Diffs ({}):\n", report.execution_diffs.len()));
         for diff in &report.execution_diffs {
-            let match_str = if diff.outputs_match {
-                "MATCH"
-            } else {
-                "MISMATCH"
-            };
-            out.push_str(&format!(
-                "  {} args={} OLD={} NEW={} [{}]\n",
-                diff.function, diff.args, diff.old_result, diff.new_result, match_str
-            ));
+            let match_str = if diff.outputs_match { "MATCH" } else { "MISMATCH" };
+            out.push_str(
+                &format!(
+                    "  {} args={} OLD={} NEW={} [{}]\n",
+                    diff.function,
+                    diff.args,
+                    diff.old_result,
+                    diff.new_result,
+                    match_str
+                )
+            );
         }
     }
 
     out.push('\n');
-    let old_names: Vec<&str> = report
-        .old_functions
+    let old_names: Vec<&str> = report.old_functions
         .iter()
         .map(|f| f.name.as_str())
         .collect();
-    let new_names: Vec<&str> = report
-        .new_functions
+    let new_names: Vec<&str> = report.new_functions
         .iter()
         .map(|f| f.name.as_str())
         .collect();
-    out.push_str(&format!(
-        "Old Functions ({}): {}\n",
-        old_names.len(),
-        old_names.join(", ")
-    ));
-    out.push_str(&format!(
-        "New Functions ({}): {}\n",
-        new_names.len(),
-        new_names.join(", ")
-    ));
+    out.push_str(&format!("Old Functions ({}): {}\n", old_names.len(), old_names.join(", ")));
+    out.push_str(&format!("New Functions ({}): {}\n", new_names.len(), new_names.join(", ")));
 
     out
 }
 
 /// Parse JSON arguments with validation.
 pub fn parse_args(json: &str) -> Result<String> {
-    let value = serde_json::from_str::<serde_json::Value>(json).map_err(|e| {
-        DebuggerError::InvalidArguments(format!(
-            "Failed to parse JSON arguments: {}. Error: {}",
-            json, e
-        ))
-    })?;
+    let value = serde_json
+        ::from_str::<serde_json::Value>(json)
+        .map_err(|e| {
+            DebuggerError::InvalidArguments(
+                format!("Failed to parse JSON arguments: {}. Error: {}", json, e)
+            )
+        })?;
 
     match value {
         serde_json::Value::Array(ref arr) => {
@@ -1141,42 +1149,39 @@ pub fn parse_args(json: &str) -> Result<String> {
 
 /// Parse JSON storage.
 pub fn parse_storage(json: &str) -> Result<String> {
-    serde_json::from_str::<serde_json::Value>(json).map_err(|e| {
-        DebuggerError::StorageError(format!(
-            "Failed to parse JSON storage: {}. Error: {}",
-            json, e
-        ))
-    })?;
+    serde_json
+        ::from_str::<serde_json::Value>(json)
+        .map_err(|e| {
+            DebuggerError::StorageError(
+                format!("Failed to parse JSON storage: {}. Error: {}", json, e)
+            )
+        })?;
     Ok(json.to_string())
 }
 
 /// Execute the optimize command.
 pub fn optimize(args: OptimizeArgs, _verbosity: Verbosity) -> Result<()> {
-    print_info(format!(
-        "Analyzing contract for gas optimization: {:?}",
-        args.contract
-    ));
+    print_info(format!("Analyzing contract for gas optimization: {:?}", args.contract));
     logging::log_loading_contract(&args.contract.to_string_lossy());
 
-    let wasm_file = crate::utils::wasm::load_wasm(&args.contract)
+    let wasm_file = crate::utils::wasm
+        ::load_wasm(&args.contract)
         .with_context(|| format!("Failed to read WASM file: {:?}", args.contract))?;
     let wasm_bytes = wasm_file.bytes;
     let wasm_hash = wasm_file.sha256_hash;
 
     if let Some(expected) = &args.expected_hash {
         if expected.to_lowercase() != wasm_hash {
-            return Err(crate::DebuggerError::ChecksumMismatch {
-                expected: expected.clone(),
-                actual: wasm_hash.clone(),
-            }
-            .into());
+            return Err(
+                (crate::DebuggerError::ChecksumMismatch {
+                    expected: expected.clone(),
+                    actual: wasm_hash.clone(),
+                }).into()
+            );
         }
     }
 
-    print_success(format!(
-        "Contract loaded successfully ({} bytes)",
-        wasm_bytes.len()
-    ));
+    print_success(format!("Contract loaded successfully ({} bytes)", wasm_bytes.len()));
 
     if _verbosity == Verbosity::Verbose {
         print_verbose(format!("SHA-256: {}", wasm_hash));
@@ -1210,10 +1215,7 @@ pub fn optimize(args: OptimizeArgs, _verbosity: Verbosity) -> Result<()> {
 
     let mut optimizer = crate::profiler::analyzer::GasOptimizer::new(executor);
 
-    print_info(format!(
-        "\nAnalyzing {} function(s)...",
-        functions_to_analyze.len()
-    ));
+    print_info(format!("\nAnalyzing {} function(s)...", functions_to_analyze.len()));
     logging::log_analysis_start("gas optimization");
 
     for function_name in &functions_to_analyze {
@@ -1223,20 +1225,24 @@ pub fn optimize(args: OptimizeArgs, _verbosity: Verbosity) -> Result<()> {
                 logging::log_display(
                     format!(
                         "    CPU: {} instructions, Memory: {} bytes, Time: {} ms",
-                        profile.total_cpu, profile.total_memory, profile.wall_time_ms
+                        profile.total_cpu,
+                        profile.total_memory,
+                        profile.wall_time_ms
                     ),
-                    logging::LogLevel::Info,
+                    logging::LogLevel::Info
                 );
-                print_success(format!(
-                    "    CPU: {} instructions, Memory: {} bytes",
-                    profile.total_cpu, profile.total_memory
-                ));
+                print_success(
+                    format!(
+                        "    CPU: {} instructions, Memory: {} bytes",
+                        profile.total_cpu,
+                        profile.total_memory
+                    )
+                );
             }
             Err(e) => {
-                print_warning(format!(
-                    "    Warning: Failed to analyze function {}: {}",
-                    function_name, e
-                ));
+                print_warning(
+                    format!("    Warning: Failed to analyze function {}: {}", function_name, e)
+                );
                 tracing::warn!(function = function_name, error = %e, "Failed to analyze function");
             }
         }
@@ -1248,16 +1254,14 @@ pub fn optimize(args: OptimizeArgs, _verbosity: Verbosity) -> Result<()> {
     let markdown = optimizer.generate_markdown_report(&report);
 
     if let Some(output_path) = &args.output {
-        fs::write(output_path, &markdown).map_err(|e| {
-            DebuggerError::FileError(format!(
-                "Failed to write report to {:?}: {}",
-                output_path, e
-            ))
-        })?;
-        print_success(format!(
-            "\nOptimization report written to: {:?}",
-            output_path
-        ));
+        fs
+            ::write(output_path, &markdown)
+            .map_err(|e| {
+                DebuggerError::FileError(
+                    format!("Failed to write report to {:?}: {}", output_path, e)
+                )
+            })?;
+        print_success(format!("\nOptimization report written to: {:?}", output_path));
         logging::log_optimization_report(&output_path.to_string_lossy());
     } else {
         logging::log_display(&markdown, logging::LogLevel::Info);
@@ -1270,27 +1274,29 @@ pub fn optimize(args: OptimizeArgs, _verbosity: Verbosity) -> Result<()> {
 pub fn profile(args: ProfileArgs) -> Result<()> {
     logging::log_display(
         format!("Profiling contract execution: {:?}", args.contract),
-        logging::LogLevel::Info,
+        logging::LogLevel::Info
     );
 
-    let wasm_file = crate::utils::wasm::load_wasm(&args.contract)
+    let wasm_file = crate::utils::wasm
+        ::load_wasm(&args.contract)
         .with_context(|| format!("Failed to read WASM file: {:?}", args.contract))?;
     let wasm_bytes = wasm_file.bytes;
     let wasm_hash = wasm_file.sha256_hash;
 
     if let Some(expected) = &args.expected_hash {
         if expected.to_lowercase() != wasm_hash {
-            return Err(crate::DebuggerError::ChecksumMismatch {
-                expected: expected.clone(),
-                actual: wasm_hash.clone(),
-            }
-            .into());
+            return Err(
+                (crate::DebuggerError::ChecksumMismatch {
+                    expected: expected.clone(),
+                    actual: wasm_hash.clone(),
+                }).into()
+            );
         }
     }
 
     logging::log_display(
         format!("Contract loaded successfully ({} bytes)", wasm_bytes.len()),
-        logging::LogLevel::Info,
+        logging::LogLevel::Info
     );
 
     // Parse args (optional)
@@ -1312,10 +1318,7 @@ pub fn profile(args: ProfileArgs) -> Result<()> {
     // Analyze exactly one function (this command focuses on execution hotspots)
     let mut optimizer = crate::profiler::analyzer::GasOptimizer::new(executor);
 
-    logging::log_display(
-        format!("\nRunning function: {}", args.function),
-        logging::LogLevel::Info,
-    );
+    logging::log_display(format!("\nRunning function: {}", args.function), logging::LogLevel::Info);
     if let Some(ref a) = parsed_args {
         logging::log_display(format!("Args: {}", a), logging::LogLevel::Info);
     }
@@ -1326,24 +1329,22 @@ pub fn profile(args: ProfileArgs) -> Result<()> {
     let report = optimizer.generate_report(&contract_path_str);
 
     // Hotspot summary first
-    logging::log_display(
-        format!("\n{}", report.format_hotspots()),
-        logging::LogLevel::Info,
-    );
+    logging::log_display(format!("\n{}", report.format_hotspots()), logging::LogLevel::Info);
 
     // Then detailed suggestions (markdown format)
     let markdown = optimizer.generate_markdown_report(&report);
 
     if let Some(output_path) = &args.output {
-        fs::write(output_path, &markdown).map_err(|e| {
-            DebuggerError::FileError(format!(
-                "Failed to write report to {:?}: {}",
-                output_path, e
-            ))
-        })?;
+        fs
+            ::write(output_path, &markdown)
+            .map_err(|e| {
+                DebuggerError::FileError(
+                    format!("Failed to write report to {:?}: {}", output_path, e)
+                )
+            })?;
         logging::log_display(
             format!("\nProfile report written to: {:?}", output_path),
-            logging::LogLevel::Info,
+            logging::LogLevel::Info
         );
     } else {
         logging::log_display(format!("\n{}", markdown), logging::LogLevel::Info);
@@ -1365,12 +1366,13 @@ pub fn compare(args: CompareArgs) -> Result<()> {
     let rendered = crate::compare::CompareEngine::render_report(&report);
 
     if let Some(output_path) = &args.output {
-        fs::write(output_path, &rendered).map_err(|e| {
-            DebuggerError::FileError(format!(
-                "Failed to write report to {:?}: {}",
-                output_path, e
-            ))
-        })?;
+        fs
+            ::write(output_path, &rendered)
+            .map_err(|e| {
+                DebuggerError::FileError(
+                    format!("Failed to write report to {:?}: {}", output_path, e)
+                )
+            })?;
         print_success(format!("Comparison report written to: {:?}", output_path));
     } else {
         logging::log_display(rendered, logging::LogLevel::Info);
@@ -1390,29 +1392,30 @@ pub fn replay(args: ReplayArgs, verbosity: Verbosity) -> Result<()> {
     } else if let Some(contract_str) = &original_trace.contract {
         std::path::PathBuf::from(contract_str)
     } else {
-        return Err(DebuggerError::ExecutionError(
-            "No contract path specified and trace file does not contain contract path".to_string(),
-        )
-        .into());
+        return Err(
+            DebuggerError::ExecutionError(
+                "No contract path specified and trace file does not contain contract path".to_string()
+            ).into()
+        );
     };
 
     print_info(format!("Loading contract: {:?}", contract_path));
-    let wasm_bytes = fs::read(&contract_path).map_err(|e| {
-        DebuggerError::WasmLoadError(format!(
-            "Failed to read WASM file at {:?}: {}",
-            contract_path, e
-        ))
-    })?;
+    let wasm_bytes = fs
+        ::read(&contract_path)
+        .map_err(|e| {
+            DebuggerError::WasmLoadError(
+                format!("Failed to read WASM file at {:?}: {}", contract_path, e)
+            )
+        })?;
 
-    print_success(format!(
-        "Contract loaded successfully ({} bytes)",
-        wasm_bytes.len()
-    ));
+    print_success(format!("Contract loaded successfully ({} bytes)", wasm_bytes.len()));
 
     // Extract function and args from trace
-    let function = original_trace.function.as_ref().ok_or_else(|| {
-        DebuggerError::ExecutionError("Trace file does not contain function name".to_string())
-    })?;
+    let function = original_trace.function
+        .as_ref()
+        .ok_or_else(|| {
+            DebuggerError::ExecutionError("Trace file does not contain function name".to_string())
+        })?;
 
     let args_str = original_trace.args.as_deref();
 
@@ -1433,9 +1436,11 @@ pub fn replay(args: ReplayArgs, verbosity: Verbosity) -> Result<()> {
 
     // Set up initial storage from trace
     let initial_storage = if !original_trace.storage.is_empty() {
-        let storage_json = serde_json::to_string(&original_trace.storage).map_err(|e| {
-            DebuggerError::StorageError(format!("Failed to serialize trace storage: {}", e))
-        })?;
+        let storage_json = serde_json
+            ::to_string(&original_trace.storage)
+            .map_err(|e| {
+                DebuggerError::StorageError(format!("Failed to serialize trace storage: {}", e))
+            })?;
         Some(storage_json)
     } else {
         None
@@ -1472,7 +1477,7 @@ pub fn replay(args: ReplayArgs, verbosity: Verbosity) -> Result<()> {
         budget,
         engine.executor(),
         &trace_events,
-        replay_steps,
+        replay_steps
     );
 
     // Truncate original_trace's call_sequence if needed to match replay_until
@@ -1487,12 +1492,13 @@ pub fn replay(args: ReplayArgs, verbosity: Verbosity) -> Result<()> {
     let rendered = crate::compare::CompareEngine::render_report(&report);
 
     if let Some(output_path) = &args.output {
-        std::fs::write(output_path, &rendered).map_err(|e| {
-            DebuggerError::FileError(format!(
-                "Failed to write report to {:?}: {}",
-                output_path, e
-            ))
-        })?;
+        std::fs
+            ::write(output_path, &rendered)
+            .map_err(|e| {
+                DebuggerError::FileError(
+                    format!("Failed to write report to {:?}: {}", output_path, e)
+                )
+            })?;
         print_success(format!("\nReplay report written to: {:?}", output_path));
     } else {
         logging::log_display(rendered, logging::LogLevel::Info);
@@ -1520,10 +1526,7 @@ pub fn replay(args: ReplayArgs, verbosity: Verbosity) -> Result<()> {
 
 /// Start debug server for remote connections
 pub fn server(args: ServerArgs) -> Result<()> {
-    print_info(format!(
-        "Starting remote debug server on port {}",
-        args.port
-    ));
+    print_info(format!("Starting remote debug server on port {}", args.port));
     if args.token.is_some() {
         print_info("Token authentication enabled");
     } else {
@@ -1536,10 +1539,11 @@ pub fn server(args: ServerArgs) -> Result<()> {
     let server = crate::server::DebugServer::new(
         args.token.clone(),
         args.tls_cert.as_deref(),
-        args.tls_key.as_deref(),
+        args.tls_key.as_deref()
     )?;
 
-    tokio::runtime::Runtime::new()
+    tokio::runtime::Runtime
+        ::new()
         .map_err(|e: std::io::Error| miette::miette!(e))
         .and_then(|rt| rt.block_on(server.run(args.port)))
 }
@@ -1571,25 +1575,24 @@ pub fn interactive(args: InteractiveArgs, _verbosity: Verbosity) -> Result<()> {
     print_info(format!("Loading contract: {:?}", args.contract));
     logging::log_loading_contract(&args.contract.to_string_lossy());
 
-    let wasm_file = crate::utils::wasm::load_wasm(&args.contract)
+    let wasm_file = crate::utils::wasm
+        ::load_wasm(&args.contract)
         .with_context(|| format!("Failed to read WASM file: {:?}", args.contract))?;
     let wasm_bytes = wasm_file.bytes;
     let wasm_hash = wasm_file.sha256_hash;
 
     if let Some(expected) = &args.expected_hash {
         if expected.to_lowercase() != wasm_hash {
-            return Err(crate::DebuggerError::ChecksumMismatch {
-                expected: expected.clone(),
-                actual: wasm_hash.clone(),
-            }
-            .into());
+            return Err(
+                (crate::DebuggerError::ChecksumMismatch {
+                    expected: expected.clone(),
+                    actual: wasm_hash.clone(),
+                }).into()
+            );
         }
     }
 
-    print_success(format!(
-        "Contract loaded successfully ({} bytes)",
-        wasm_bytes.len()
-    ));
+    print_success(format!("Contract loaded successfully ({} bytes)", wasm_bytes.len()));
 
     if let Some(snapshot_path) = &args.network_snapshot {
         print_info(format!("Loading network snapshot: {:?}", snapshot_path));
@@ -1615,9 +1618,15 @@ pub fn interactive(args: InteractiveArgs, _verbosity: Verbosity) -> Result<()> {
         print_info(format!("Importing storage from: {:?}", import_path));
         let imported = crate::inspector::storage::StorageState::import_from_file(import_path)?;
         print_success(format!("Imported {} storage entries", imported.len()));
-        initial_storage = Some(serde_json::to_string(&imported).map_err(|e| {
-            DebuggerError::StorageError(format!("Failed to serialize imported storage: {}", e))
-        })?);
+        initial_storage = Some(
+            serde_json
+                ::to_string(&imported)
+                .map_err(|e| {
+                    DebuggerError::StorageError(
+                        format!("Failed to serialize imported storage: {}", e)
+                    )
+                })?
+        );
     }
 
     let mut executor = ContractExecutor::new(wasm_bytes.clone())?;
@@ -1651,14 +1660,12 @@ pub fn interactive(args: InteractiveArgs, _verbosity: Verbosity) -> Result<()> {
 /// Launch TUI debugger
 pub fn tui(args: TuiArgs, _verbosity: Verbosity) -> Result<()> {
     print_info(format!("Loading contract: {:?}", args.contract));
-    let wasm_file = crate::utils::wasm::load_wasm(&args.contract)
+    let wasm_file = crate::utils::wasm
+        ::load_wasm(&args.contract)
         .with_context(|| format!("Failed to read WASM file: {:?}", args.contract))?;
     let wasm_bytes = wasm_file.bytes;
 
-    print_success(format!(
-        "Contract loaded successfully ({} bytes)",
-        wasm_bytes.len()
-    ));
+    print_success(format!("Contract loaded successfully ({} bytes)", wasm_bytes.len()));
 
     if let Some(snapshot_path) = &args.network_snapshot {
         print_info(format!("Loading network snapshot: {:?}", snapshot_path));
@@ -1694,7 +1701,8 @@ pub fn tui(args: TuiArgs, _verbosity: Verbosity) -> Result<()> {
 
 /// Inspect a WASM contract
 pub fn inspect(args: InspectArgs, _verbosity: Verbosity) -> Result<()> {
-    let bytes = fs::read(&args.contract)
+    let bytes = fs
+        ::read(&args.contract)
         .map_err(|e| miette::miette!("Failed to read contract {:?}: {}", args.contract, e))?;
     let info = crate::utils::wasm::get_module_info(&bytes)?;
     println!("Contract: {:?}", args.contract);
@@ -1706,8 +1714,7 @@ pub fn inspect(args: InspectArgs, _verbosity: Verbosity) -> Result<()> {
         let sigs = crate::utils::wasm::parse_function_signatures(&bytes)?;
         println!("Exported functions:");
         for sig in &sigs {
-            let params: Vec<String> = sig
-                .params
+            let params: Vec<String> = sig.params
                 .iter()
                 .map(|p| format!("{}: {}", p.name, p.type_name))
                 .collect();
@@ -1721,7 +1728,8 @@ pub fn inspect(args: InspectArgs, _verbosity: Verbosity) -> Result<()> {
 /// Run symbolic execution analysis
 pub fn symbolic(args: SymbolicArgs, _verbosity: Verbosity) -> Result<()> {
     print_info(format!("Loading contract: {:?}", args.contract));
-    let wasm_file = crate::utils::wasm::load_wasm(&args.contract)
+    let wasm_file = crate::utils::wasm
+        ::load_wasm(&args.contract)
         .with_context(|| format!("Failed to read WASM file: {:?}", args.contract))?;
 
     let analyzer = SymbolicAnalyzer::new();
@@ -1731,12 +1739,13 @@ pub fn symbolic(args: SymbolicArgs, _verbosity: Verbosity) -> Result<()> {
 
     if let Some(output_path) = &args.output {
         let scenario_toml = analyzer.generate_scenario_toml(&report);
-        fs::write(output_path, scenario_toml).map_err(|e| {
-            DebuggerError::FileError(format!(
-                "Failed to write symbolic scenario to {:?}: {}",
-                output_path, e
-            ))
-        })?;
+        fs
+            ::write(output_path, scenario_toml)
+            .map_err(|e| {
+                DebuggerError::FileError(
+                    format!("Failed to write symbolic scenario to {:?}: {}", output_path, e)
+                )
+            })?;
         print_success(format!("Scenario TOML written to: {:?}", output_path));
     }
 
@@ -1746,7 +1755,8 @@ pub fn symbolic(args: SymbolicArgs, _verbosity: Verbosity) -> Result<()> {
 /// Analyze a contract
 pub fn analyze(args: AnalyzeArgs, _verbosity: Verbosity) -> Result<()> {
     print_info(format!("Loading contract: {:?}", args.contract));
-    let wasm_file = crate::utils::wasm::load_wasm(&args.contract)
+    let wasm_file = crate::utils::wasm
+        ::load_wasm(&args.contract)
         .with_context(|| format!("Failed to read WASM file: {:?}", args.contract))?;
 
     let mut dynamic_analysis = None;
@@ -1783,20 +1793,15 @@ pub fn analyze(args: AnalyzeArgs, _verbosity: Verbosity) -> Result<()> {
                 executor = Some(dynamic_executor);
             }
             Err(err) => {
-                warnings.push(format!(
-                    "Dynamic analysis for function '{}' failed: {}",
-                    function, err
-                ));
+                warnings.push(
+                    format!("Dynamic analysis for function '{}' failed: {}", function, err)
+                );
             }
         }
     }
 
     let analyzer = SecurityAnalyzer::new();
-    let report = analyzer.analyze(
-        &wasm_file.bytes,
-        executor.as_ref(),
-        trace_entries.as_deref(),
-    )?;
+    let report = analyzer.analyze(&wasm_file.bytes, executor.as_ref(), trace_entries.as_deref())?;
     let output = AnalyzeCommandOutput {
         findings: report.findings,
         dynamic_analysis,
@@ -1805,18 +1810,23 @@ pub fn analyze(args: AnalyzeArgs, _verbosity: Verbosity) -> Result<()> {
 
     match args.format.to_lowercase().as_str() {
         "text" => println!("{}", render_security_report(&output)),
-        "json" => println!(
-            "{}",
-            serde_json::to_string_pretty(&output).map_err(|e| {
-                DebuggerError::FileError(format!("Failed to serialize analysis output: {}", e))
-            })?
-        ),
+        "json" =>
+            println!(
+                "{}",
+                serde_json
+                    ::to_string_pretty(&output)
+                    .map_err(|e| {
+                        DebuggerError::FileError(
+                            format!("Failed to serialize analysis output: {}", e)
+                        )
+                    })?
+            ),
         other => {
-            return Err(DebuggerError::InvalidArguments(format!(
-                "Unsupported --format '{}'. Use 'text' or 'json'.",
-                other
-            ))
-            .into())
+            return Err(
+                DebuggerError::InvalidArguments(
+                    format!("Unsupported --format '{}'. Use 'text' or 'json'.", other)
+                ).into()
+            );
         }
     }
 
@@ -1831,7 +1841,8 @@ pub fn scenario(args: ScenarioArgs, _verbosity: Verbosity) -> Result<()> {
 /// Launch the REPL
 pub async fn repl(args: ReplArgs) -> Result<()> {
     print_info(format!("Loading contract: {:?}", args.contract));
-    let wasm_file = crate::utils::wasm::load_wasm(&args.contract)
+    let wasm_file = crate::utils::wasm
+        ::load_wasm(&args.contract)
         .with_context(|| format!("Failed to read WASM file: {:?}", args.contract))?;
     crate::utils::wasm::verify_wasm_hash(&wasm_file.sha256_hash, args.expected_hash.as_ref())?;
 
@@ -1843,8 +1854,7 @@ pub async fn repl(args: ReplArgs) -> Result<()> {
         contract_path: args.contract,
         network_snapshot: args.network_snapshot,
         storage: args.storage,
-    })
-    .await
+    }).await
 }
 
 /// Show budget trend chart
@@ -1869,8 +1879,14 @@ pub fn show_budget_trend(contract: Option<&str>, function: Option<&str>) -> Resu
     }
 
     let stats = budget_trend_stats_or_err(&records)?;
-    let cpu_values: Vec<u64> = records.iter().map(|r| r.cpu_used).collect();
-    let mem_values: Vec<u64> = records.iter().map(|r| r.memory_used).collect();
+    let cpu_values: Vec<u64> = records
+        .iter()
+        .map(|r| r.cpu_used)
+        .collect();
+    let mem_values: Vec<u64> = records
+        .iter()
+        .map(|r| r.memory_used)
+        .collect();
 
     if !Formatter::is_quiet() {
         println!("Budget Trend");
@@ -1879,23 +1895,20 @@ pub fn show_budget_trend(contract: Option<&str>, function: Option<&str>) -> Resu
             contract.unwrap_or("*"),
             function.unwrap_or("*")
         );
-        println!(
-            "Runs: {}   Range: {} -> {}",
-            stats.count, stats.first_date, stats.last_date
-        );
+        println!("Runs: {}   Range: {} -> {}", stats.count, stats.first_date, stats.last_date);
         println!(
             "CPU insns: last={}  avg={}  min={}  max={}",
             crate::inspector::budget::BudgetInspector::format_cpu_insns(stats.last_cpu),
             crate::inspector::budget::BudgetInspector::format_cpu_insns(stats.cpu_avg),
             crate::inspector::budget::BudgetInspector::format_cpu_insns(stats.cpu_min),
-            crate::inspector::budget::BudgetInspector::format_cpu_insns(stats.cpu_max),
+            crate::inspector::budget::BudgetInspector::format_cpu_insns(stats.cpu_max)
         );
         println!(
             "Mem bytes: last={}  avg={}  min={}  max={}",
             crate::inspector::budget::BudgetInspector::format_memory_bytes(stats.last_mem),
             crate::inspector::budget::BudgetInspector::format_memory_bytes(stats.mem_avg),
             crate::inspector::budget::BudgetInspector::format_memory_bytes(stats.mem_min),
-            crate::inspector::budget::BudgetInspector::format_memory_bytes(stats.mem_max),
+            crate::inspector::budget::BudgetInspector::format_memory_bytes(stats.mem_max)
         );
         println!();
         println!("CPU trend: {}", Formatter::sparkline(&cpu_values, 50));
