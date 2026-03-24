@@ -5,7 +5,7 @@ import {
   ExitedEvent} from '@vscode/debugadapter';
 import { DebugProtocol } from '@vscode/debugprotocol';
 import * as readline from 'readline';
-import { DebuggerProcess, DebuggerProcessConfig } from '../cli/debuggerProcess';
+import { DebuggerProcess, DebuggerProcessConfig, DebuggerTimeoutError } from '../cli/debuggerProcess';
 import { DebuggerState, Variable } from './protocol';
 import { ResolvedBreakpoint, resolveSourceBreakpoints } from './sourceBreakpoints';
 import { LogOutputEvent, LogLevel } from '@vscode/debugadapter/lib/logger';
@@ -60,7 +60,9 @@ export class SorobanDebugSession extends DebugSession {
         trace: args.trace || false,
         binaryPath: args.binaryPath,
         port: args.port,
-        token: args.token
+        token: args.token,
+        requestTimeoutMs: args.requestTimeoutMs,
+        connectTimeoutMs: args.connectTimeoutMs
       });
 
       await this.debuggerProcess.start();
@@ -74,9 +76,12 @@ export class SorobanDebugSession extends DebugSession {
       this.attachProcessListeners();
       this.sendResponse(response);
     } catch (error) {
+      const message = error instanceof DebuggerTimeoutError
+        ? `Failed to launch debugger (timeout): ${error.message}\n\nNext steps: ensure the backend process is running, reachable, and not stalled; then retry the session.`
+        : `Failed to launch debugger: ${error}`;
       this.sendErrorResponse(response, {
         id: 1001,
-        format: `Failed to launch debugger: ${error}`,
+        format: message,
         showUser: true
       });
     }
@@ -220,6 +225,10 @@ export class SorobanDebugSession extends DebugSession {
     const expression = (args.expression || '').trim();
 
     try {
+      if (this.debuggerProcess && this.state.isPaused) {
+        await this.refreshState();
+      }
+
       if (expression === 'args' || expression === 'Arguments') {
         response.body = {
           result: this.state.args ?? '(none)',
@@ -257,6 +266,17 @@ export class SorobanDebugSession extends DebugSession {
 
       throw new Error('Unsupported expression. Try `args`, `storage`, or `storage.<key>`.');
     } catch (error) {
+      if (error instanceof DebuggerTimeoutError) {
+        this.sendErrorResponse(response, {
+          id: 1010,
+          format:
+            `Evaluate timed out (${error.requestType}). The backend may be stalled.\n\n` +
+            `Next steps: restart the debug session; if it persists, verify the backend binary and connectivity.`,
+          showUser: true
+        });
+        return;
+      }
+
       this.sendErrorResponse(response, {
         id: 1010,
         format: `Evaluate failed: ${error}`,
@@ -297,6 +317,17 @@ export class SorobanDebugSession extends DebugSession {
       this.sendEvent(new ExitedEvent(0));
       await this.stop();
     } catch (error) {
+      if (error instanceof DebuggerTimeoutError) {
+        this.sendEvent(new LogOutputEvent(
+          `Debugger request timed out (${error.requestType}). The backend may be stalled or the connection is unhealthy.\n` +
+          `Next steps: restart the debug session; if it persists, verify the backend binary and network connectivity.\n`,
+          LogLevel.Error
+        ));
+        this.sendEvent(new ExitedEvent(1));
+        await this.stop();
+        return;
+      }
+
       this.sendErrorResponse(response, {
         id: 1002,
         format: `Continue failed: ${error}`,
@@ -342,13 +373,32 @@ export class SorobanDebugSession extends DebugSession {
     response: DebugProtocol.ConfigurationDoneResponse,
     args: DebugProtocol.ConfigurationDoneArguments
   ): Promise<void> {
-    if (this.debuggerProcess) {
-      await this.refreshState();
-      this.state.isPaused = true;
-      this.sendEvent(new StoppedEvent('entry', this.threadId));
-    }
+    try {
+      if (this.debuggerProcess) {
+        await this.refreshState();
+        this.state.isPaused = true;
+        this.sendEvent(new StoppedEvent('entry', this.threadId));
+      }
+      this.sendResponse(response);
+    } catch (error) {
+      if (error instanceof DebuggerTimeoutError) {
+        this.sendEvent(new LogOutputEvent(
+          `[timeout] configurationDone refresh timed out (${error.requestType}).\n` +
+          `Next steps: restart the debug session.\n`,
+          LogLevel.Error
+        ));
+        this.sendEvent(new ExitedEvent(1));
+        await this.stop();
+        this.sendResponse(response);
+        return;
+      }
 
-    this.sendResponse(response);
+      this.sendErrorResponse(response, {
+        id: 1009,
+        format: `Configuration failed: ${error}`,
+        showUser: true
+      });
+    }
   }
 
   protected async evaluateRequest(
@@ -482,6 +532,17 @@ export class SorobanDebugSession extends DebugSession {
       this.sendEvent(new ExitedEvent(0));
       await this.stop();
     } catch (error) {
+      if (error instanceof DebuggerTimeoutError) {
+        this.sendEvent(new LogOutputEvent(
+          `${label} timed out (${error.requestType}). The backend may be stalled.\n` +
+          `Next steps: restart the debug session.\n`,
+          LogLevel.Error
+        ));
+        this.sendEvent(new ExitedEvent(1));
+        await this.stop();
+        return;
+      }
+
       this.sendEvent(new LogOutputEvent(`${label} failed: ${error}\n`, LogLevel.Error));
     }
   }

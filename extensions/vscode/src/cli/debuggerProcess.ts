@@ -13,6 +13,8 @@ export interface DebuggerProcessConfig {
   binaryPath?: string;
   port?: number;
   token?: string;
+  requestTimeoutMs?: number;
+  connectTimeoutMs?: number;
 }
 
 export interface DebuggerExecutionResult {
@@ -82,6 +84,18 @@ type PendingRequest = {
   reject: (error: Error) => void;
 };
 
+export class DebuggerTimeoutError extends Error {
+  readonly requestType: string;
+  readonly timeoutMs: number;
+
+  constructor(requestType: string, timeoutMs: number) {
+    super(`Timed out waiting for debugger response to ${requestType} after ${timeoutMs}ms`);
+    this.name = 'DebuggerTimeoutError';
+    this.requestType = requestType;
+    this.timeoutMs = timeoutMs;
+  }
+}
+
 export function formatProtocolMismatchMessage(details: {
   extensionVersion: string;
   backendVersion?: string;
@@ -118,9 +132,22 @@ export class DebuggerProcess {
   private config: DebuggerProcessConfig;
   private port: number | null = null;
   private negotiatedProtocolVersion: number | null = null;
+  private defaultRequestTimeoutMs: number;
+  private defaultConnectTimeoutMs: number;
 
   constructor(config: DebuggerProcessConfig) {
     this.config = config;
+
+    const envRequestTimeout = Number(process.env.SOROBAN_DEBUG_REQUEST_TIMEOUT_MS);
+    const envConnectTimeout = Number(process.env.SOROBAN_DEBUG_CONNECT_TIMEOUT_MS);
+
+    this.defaultRequestTimeoutMs = Number.isFinite(config.requestTimeoutMs)
+      ? Number(config.requestTimeoutMs)
+      : (Number.isFinite(envRequestTimeout) ? envRequestTimeout : 30_000);
+
+    this.defaultConnectTimeoutMs = Number.isFinite(config.connectTimeoutMs)
+      ? Number(config.connectTimeoutMs)
+      : (Number.isFinite(envConnectTimeout) ? envConnectTimeout : 10_000);
   }
 
   async start(): Promise<void> {
@@ -296,11 +323,12 @@ export class DebuggerProcess {
     const binaryPath = this.resolveBinaryPath();
 
     const output = await new Promise<string>((resolve, reject) => {
-      execFile(
+      const child = execFile(
         binaryPath,
         ['inspect', '--contract', this.config.contractPath, '--functions'],
         { env: process.env },
         (error, stdout, stderr) => {
+          clearTimeout(timer);
           if (error) {
             reject(new Error(stderr || stdout || String(error)));
             return;
@@ -308,6 +336,11 @@ export class DebuggerProcess {
           resolve(stdout);
         }
       );
+
+      const timer = setTimeout(() => {
+        child.kill();
+        reject(new DebuggerTimeoutError('InspectFunctions', this.defaultRequestTimeoutMs));
+      }, this.defaultRequestTimeoutMs);
     });
 
     const functions = new Set<string>();
@@ -431,7 +464,7 @@ export class DebuggerProcess {
   }
 
   private async waitForServer(port: number): Promise<void> {
-    const deadline = Date.now() + 10000;
+    const deadline = Date.now() + this.defaultConnectTimeoutMs;
 
     while (Date.now() < deadline) {
       if (this.process && this.process.exitCode !== null) {
@@ -525,10 +558,10 @@ export class DebuggerProcess {
     const message: DebugMessage = { id, request };
 
     const responsePromise = new Promise<DebugResponse>((resolve, reject) => {
-      const timeoutMs = options.timeoutMs ?? 30_000;
+      const timeoutMs = options.timeoutMs ?? this.defaultRequestTimeoutMs;
       const timer = setTimeout(() => {
         this.pendingRequests.delete(id);
-        reject(new Error(`Timed out waiting for debugger response to ${request.type}`));
+        reject(new DebuggerTimeoutError(request.type, timeoutMs));
       }, timeoutMs);
 
       this.pendingRequests.set(id, {

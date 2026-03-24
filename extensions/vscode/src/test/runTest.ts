@@ -2,7 +2,7 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
 import { spawn } from 'child_process';
-import { DebuggerProcess, formatProtocolMismatchMessage } from '../cli/debuggerProcess';
+import { DebuggerProcess, DebuggerTimeoutError, formatProtocolMismatchMessage } from '../cli/debuggerProcess';
 import { resolveSourceBreakpoints } from '../dap/sourceBreakpoints';
 import { DapClient } from './dapClient';
 
@@ -18,6 +18,8 @@ async function main(): Promise<void> {
   assert.match(compatibilityMessage, /Extension version:/, 'Expected protocol mismatch message to mention extension version');
   assert.match(compatibilityMessage, /supports protocol/, 'Expected protocol mismatch message to mention backend protocol range');
   assert.match(compatibilityMessage, /Remediation:/, 'Expected protocol mismatch message to include remediation guidance');
+
+  await assertPerRequestTimeoutBehavior();
 
   const extensionRoot = process.cwd();
   const repoRoot = path.resolve(extensionRoot, '..', '..');
@@ -100,6 +102,36 @@ async function main(): Promise<void> {
   });
 
   console.log('VS Code DAP end-to-end tests passed');
+}
+
+async function assertPerRequestTimeoutBehavior(): Promise<void> {
+  const dp = new DebuggerProcess({
+    contractPath: 'placeholder.wasm',
+    entrypoint: 'main',
+    args: [],
+    requestTimeoutMs: 5
+  });
+
+  (dp as any).socket = { write: () => undefined, destroyed: false };
+
+  const sendRequest = (dp as any).sendRequest.bind(dp) as (req: any, opts?: any) => Promise<any>;
+
+  for (const req of [
+    { type: 'Handshake', client_name: 'test', client_version: '0.0.0', protocol_min: 1, protocol_max: 1 },
+    { type: 'Inspect' },
+    { type: 'GetStorage' },
+    { type: 'Continue' }
+  ]) {
+    let threwTimeout = false;
+    try {
+      await sendRequest(req, { timeoutMs: 5 });
+    } catch (error) {
+      threwTimeout = error instanceof DebuggerTimeoutError;
+    }
+
+    assert.equal(threwTimeout, true, `Expected ${req.type} to time out deterministically`);
+    assert.equal((dp as any).pendingRequests.size, 0, 'Expected pending request map to be cleared after timeout');
+  }
 }
 
 async function runDapHappyPathE2E(

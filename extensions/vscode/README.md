@@ -121,6 +121,20 @@ Create a `snapshot.json` file with the initial state for your debugger session. 
 - **binaryPath** (string): Optional path to the `soroban-debug` binary
   - Default: resolved from `${workspaceFolder}/target/debug/soroban-debug`, then PATH
 
+- **requestTimeoutMs** (number): Per-request timeout (wire protocol) before failing the session as unhealthy
+  - Default: `30000`
+  - Tip: If you’re debugging on a slower machine/CI, increase this.
+
+- **connectTimeoutMs** (number): Timeout to wait for the backend server to accept connections on startup
+  - Default: `10000`
+
+### Environment Overrides (Advanced)
+
+If you can’t (or don’t want to) set timeouts in `launch.json`, you can also use:
+
+- `SOROBAN_DEBUG_REQUEST_TIMEOUT_MS`
+- `SOROBAN_DEBUG_CONNECT_TIMEOUT_MS`
+
 ## Usage Guide
 
 ### Setting Breakpoints
@@ -157,6 +171,15 @@ Use the following keyboard shortcuts:
 - **Shift+F5** or **Stop**: Terminate the debugging session
 
 ## Advanced Configuration
+
+### Timeouts
+
+To avoid “frozen” sessions when the backend stalls, the extension enforces deterministic timeouts for every backend request.
+
+You can configure timeouts in either place:
+
+- VS Code Settings: `soroban-debugger.requestTimeoutMs`, `soroban-debugger.connectTimeoutMs`
+- `launch.json`: `requestTimeoutMs`, `connectTimeoutMs` (overrides settings)
 
 ### Debugging the Extension Itself
 
