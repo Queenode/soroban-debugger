@@ -161,7 +161,13 @@ impl PluginLoader {
         }
     }
 
-    /// Discover all plugins in the plugin directory
+    /// Discover all plugins in the plugin directory.
+    ///
+    /// Results are sorted by path so the discovery order is deterministic
+    /// across platforms and file-system implementations.  The registry's
+    /// topological sort handles dependency ordering; this sort ensures that
+    /// unrelated plugins always appear in the same sequence, making behaviour
+    /// reproducible and tests stable.
     pub fn discover_plugins(&self) -> Vec<PathBuf> {
         let mut manifests = Vec::new();
 
@@ -182,6 +188,10 @@ impl PluginLoader {
                 }
             }
         }
+
+        // Sort for deterministic, platform-independent discovery order.
+        // Dependency ordering is handled by the registry's topological sort.
+        manifests.sort();
 
         info!("Discovered {} plugin manifests", manifests.len());
         manifests
@@ -259,5 +269,37 @@ mod tests {
         let temp_dir = std::env::temp_dir();
         let loader = PluginLoader::new(temp_dir.clone());
         assert_eq!(loader.plugin_dir, temp_dir);
+    }
+
+    /// `discover_plugins` must return paths in sorted order so that repeated
+    /// calls on the same directory yield the same sequence regardless of the
+    /// order the OS returns directory entries.
+    #[test]
+    fn discover_plugins_returns_sorted_paths() {
+        use std::fs;
+
+        let base = std::env::temp_dir().join("soroban-loader-sort-test");
+        let _ = fs::remove_dir_all(&base);
+
+        // Create three plugin sub-directories in reverse alphabetical order so
+        // a naive read_dir would likely return them unsorted.
+        //............
+        for name in &["plugin-c", "plugin-a", "plugin-b"] {
+            let dir = base.join(name);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("plugin.toml"), "").unwrap();
+        }
+
+        let loader = PluginLoader::new(base.clone());
+        let paths = loader.discover_plugins();
+
+        let names: Vec<&str> = paths
+            .iter()
+            .filter_map(|p| p.parent()?.file_name()?.to_str())
+            .collect();
+
+        assert_eq!(names, vec!["plugin-a", "plugin-b", "plugin-c"]);
+
+        let _ = fs::remove_dir_all(&base);
     }
 }

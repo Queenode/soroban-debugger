@@ -383,7 +383,7 @@ Planned features for remote debugging:
 
 To contribute to remote debugging features:
 
-1. Review the [CONTRIBUTION.md](../CONTRIBUTION.md) guide
+1. Review the [CONTRIBUTING.md](../CONTRIBUTING.md) guide
 2. Check existing issues tagged `remote-debugging`
 3. Propose enhancements in GitHub Discussions
 4. Submit PRs with tests and documentation

@@ -131,7 +131,26 @@ Options:
       --storage-filter <PATTERN>  Filter storage by key pattern (repeatable)
   --batch-args <FILE>   Path to JSON file with array of argument sets for batch execution
   --watch               Watch the WASM file for changes and automatically re-run
+  --server              Start a remote debug server instead of executing locally
 ```
+
+### Server Command
+
+Start a remote debug server for remote debugger connections:
+
+```bash
+soroban-debug server [OPTIONS]
+
+# Also available via run command:
+soroban-debug run --server [OPTIONS]
+```
+
+Options:
+  -p, --port <PORT>     Port to listen on (default: 9229)
+  -t, --token <TOKEN>   Authentication token for remote clients
+  --tls-cert <FILE>     Path to TLS certificate for secure connections
+  --tls-key <FILE>      Path to TLS private key
+
 
 ### Automatic Test Generation
 

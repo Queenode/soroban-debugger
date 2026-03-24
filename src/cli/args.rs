@@ -76,6 +76,17 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub no_banner: bool,
 
+    /// Override the history file location (useful for CI, sandboxes, and per-project isolation)
+    ///
+    /// Equivalent to setting `SOROBAN_DEBUG_HISTORY_FILE`.
+    #[arg(
+        long,
+        global = true,
+        env = "SOROBAN_DEBUG_HISTORY_FILE",
+        value_name = "FILE"
+    )]
+    pub history_file: Option<PathBuf>,
+
     /// Show historical budget trend visualization
     #[arg(long)]
     pub budget_trend: bool,
@@ -171,16 +182,16 @@ pub enum Commands {
 #[derive(Parser)]
 pub struct RunArgs {
     /// Path to the contract WASM file
-    #[arg(short, long)]
-    pub contract: PathBuf,
+    #[arg(short, long, required_unless_present = "server")]
+    pub contract: Option<PathBuf>,
 
     /// Deprecated: use --contract instead
     #[arg(long, hide = true, alias = "wasm", alias = "contract-path")]
     pub wasm: Option<PathBuf>,
 
     /// Function name to execute
-    #[arg(short, long)]
-    pub function: String,
+    #[arg(short, long, required_unless_present = "server")]
+    pub function: Option<String>,
 
     /// Function arguments as JSON array (e.g., '["arg1", "arg2"]')
     #[arg(short, long)]
@@ -211,7 +222,7 @@ pub struct RunArgs {
     pub server: bool,
 
     /// Port to listen on or connect to
-    #[arg(long, default_value = "9229")]
+    #[arg(short, long, default_value = "9229")]
     pub port: u16,
 
     /// Connect to a remote debugger (address:port)
@@ -219,7 +230,7 @@ pub struct RunArgs {
     pub remote: Option<String>,
 
     /// Authentication token
-    #[arg(long)]
+    #[arg(short, long)]
     pub token: Option<String>,
 
     /// Path to TLS certificate file
@@ -661,6 +672,30 @@ mod tests {
         };
 
         assert!(args.is_json_output());
+    }
+
+    #[test]
+    fn run_server_mode_does_not_require_contract_or_function() {
+        let cli = Cli::try_parse_from([
+            "soroban-debug",
+            "run",
+            "--server",
+            "-p",
+            "8888",
+            "-t",
+            "secret",
+        ])
+        .expect("failed to parse run --server");
+
+        let Commands::Run(args) = cli.command.expect("run command expected") else {
+            panic!("run command expected");
+        };
+
+        assert!(args.server);
+        assert_eq!(args.port, 8888);
+        assert_eq!(args.token, Some("secret".to_string()));
+        assert!(args.contract.is_none());
+        assert!(args.function.is_none());
     }
 }
 

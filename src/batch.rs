@@ -2,11 +2,14 @@ use crate::runtime::executor::ContractExecutor;
 use crate::DebuggerError;
 use crate::Result;
 use rayon::prelude::*;
-use serde::{Deserialize, Serialize};
+use serde::{ Deserialize, Serialize };
 use serde_json::Value;
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Instant;
+use std::cell::RefCell;
+use std::thread_local;
 
 /// A single batch execution item with arguments and optional expected result
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -19,6 +22,9 @@ pub struct BatchItem {
     /// Optional label for this test case
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// When true, use exact string match; when false (default), use semantic comparison
+    #[serde(default)]
+    pub strict: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -30,6 +36,8 @@ enum BatchItemInput {
         expected: Option<Value>,
         #[serde(default)]
         label: Option<String>,
+        #[serde(default)]
+        strict: bool,
     },
     RawArgs(Value),
 }
@@ -60,41 +68,43 @@ pub struct BatchSummary {
 
 /// Batch executor for running multiple contract calls in parallel
 pub struct BatchExecutor {
-    wasm_bytes: Vec<u8>,
+    wasm_bytes: Arc<Vec<u8>>,
     function: String,
+}
+
+// Thread-local storage for executors to avoid re-initialization
+thread_local! {
+    static THREAD_EXECUTOR: RefCell<Option<(Arc<Vec<u8>>, ContractExecutor)>> = RefCell::new(None);
 }
 
 impl BatchExecutor {
     /// Create a new batch executor
-    pub fn new(wasm_bytes: Vec<u8>, function: String) -> Self {
-        Self {
-            wasm_bytes,
+    pub fn new(wasm_bytes: Vec<u8>, function: String) -> Result<Self> {
+        Ok(Self {
+            wasm_bytes: Arc::new(wasm_bytes),
             function,
-        }
+        })
     }
 
     /// Load batch items from a JSON file
     pub fn load_batch_file<P: AsRef<Path>>(path: P) -> Result<Vec<BatchItem>> {
-        let content = fs::read_to_string(path.as_ref()).map_err(|e| {
-            DebuggerError::FileError(format!(
-                "Failed to read batch file {:?}: {}",
-                path.as_ref(),
-                e
-            ))
-        })?;
+        let content = fs
+            ::read_to_string(path.as_ref())
+            .map_err(|e| {
+                DebuggerError::FileError(
+                    format!("Failed to read batch file {:?}: {}", path.as_ref(), e)
+                )
+            })?;
 
-        let parsed: Vec<BatchItemInput> = serde_json::from_str(&content).map_err(|e| {
-            DebuggerError::FileError(format!(
-                "Failed to parse batch file as JSON array {:?}: {}",
-                path.as_ref(),
-                e
-            ))
-        })?;
+        let parsed: Vec<BatchItemInput> = serde_json
+            ::from_str(&content)
+            .map_err(|e| {
+                DebuggerError::FileError(
+                    format!("Failed to parse batch file as JSON array {:?}: {}", path.as_ref(), e)
+                )
+            })?;
 
-        let items = parsed
-            .into_iter()
-            .map(BatchItem::from)
-            .collect::<Vec<BatchItem>>();
+        let items = parsed.into_iter().map(BatchItem::from).collect::<Vec<BatchItem>>();
 
         Ok(items)
     }
@@ -114,20 +124,40 @@ impl BatchExecutor {
     fn execute_single(&self, index: usize, item: &BatchItem) -> BatchResult {
         let start = Instant::now();
 
-        let executor_result = ContractExecutor::new(self.wasm_bytes.clone());
+        let (result_str, success, error) = THREAD_EXECUTOR.with(|executor_cell| {
+            let mut executor_ref = executor_cell.borrow_mut();
 
-        let (result_str, success, error) = match executor_result {
-            Ok(mut executor) => match executor.execute(&self.function, Some(&item.args)) {
-                Ok(result) => (result, true, None),
+            // Check if we need to create/recreate the executor
+            if let Some((wasm_bytes, _)) = executor_ref.as_ref() {
+                if Arc::ptr_eq(wasm_bytes, &self.wasm_bytes) {
+                    // Reuse existing executor
+                    if let Some(executor) = executor_ref.as_mut() {
+                        return match executor.1.execute(&self.function, Some(&item.args)) {
+                            Ok(result) => (result, true, None),
+                            Err(e) => (String::new(), false, Some(format!("{:#}", e))),
+                        };
+                    }
+                }
+            }
+
+            // Create new executor
+            match ContractExecutor::new((*self.wasm_bytes).clone()) {
+                Ok(mut executor) => {
+                    let result = match executor.execute(&self.function, Some(&item.args)) {
+                        Ok(result) => (result, true, None),
+                        Err(e) => (String::new(), false, Some(format!("{:#}", e))),
+                    };
+                    *executor_ref = Some((Arc::clone(&self.wasm_bytes), executor));
+                    result
+                }
                 Err(e) => (String::new(), false, Some(format!("{:#}", e))),
-            },
-            Err(e) => (String::new(), false, Some(format!("{:#}", e))),
-        };
+            }
+        });
 
         let duration = start.elapsed().as_millis();
 
         let passed = if let Some(expected) = &item.expected {
-            success && result_str == *expected
+            success && values_match(&result_str, expected, item.strict)
         } else {
             success
         };
@@ -148,10 +178,22 @@ impl BatchExecutor {
     /// Generate summary from batch results
     pub fn summarize(results: &[BatchResult]) -> BatchSummary {
         let total = results.len();
-        let passed = results.iter().filter(|r| r.passed).count();
-        let failed = results.iter().filter(|r| r.success && !r.passed).count();
-        let errors = results.iter().filter(|r| !r.success).count();
-        let total_duration_ms = results.iter().map(|r| r.duration_ms).sum();
+        let passed = results
+            .iter()
+            .filter(|r| r.passed)
+            .count();
+        let failed = results
+            .iter()
+            .filter(|r| r.success && !r.passed)
+            .count();
+        let errors = results
+            .iter()
+            .filter(|r| !r.success)
+            .count();
+        let total_duration_ms = results
+            .iter()
+            .map(|r| r.duration_ms)
+            .sum();
 
         BatchSummary {
             total,
@@ -184,22 +226,22 @@ impl BatchExecutor {
             let label = result.label.as_deref().unwrap_or(&default_label);
             crate::logging::log_display(
                 format!("\n{} {}", status, label),
-                crate::logging::LogLevel::Info,
+                crate::logging::LogLevel::Info
             );
             crate::logging::log_display(
                 format!("  Args: {}", result.args),
-                crate::logging::LogLevel::Info,
+                crate::logging::LogLevel::Info
             );
 
             if result.success {
                 crate::logging::log_display(
                     format!("  Result: {}", result.result),
-                    crate::logging::LogLevel::Info,
+                    crate::logging::LogLevel::Info
                 );
                 if let Some(expected) = &result.expected {
                     crate::logging::log_display(
                         format!("  Expected: {}", expected),
-                        crate::logging::LogLevel::Info,
+                        crate::logging::LogLevel::Info
                     );
                     if !result.passed {
                         crate::logging::log_display(
@@ -207,20 +249,20 @@ impl BatchExecutor {
                                 "  {}",
                                 Formatter::warning("Result does not match expected value")
                             ),
-                            crate::logging::LogLevel::Warn,
+                            crate::logging::LogLevel::Warn
                         );
                     }
                 }
             } else if let Some(error) = &result.error {
                 crate::logging::log_display(
                     format!("  Error: {}", Formatter::error(error)),
-                    crate::logging::LogLevel::Error,
+                    crate::logging::LogLevel::Error
                 );
             }
 
             crate::logging::log_display(
                 format!("  Duration: {}ms", result.duration_ms),
-                crate::logging::LogLevel::Info,
+                crate::logging::LogLevel::Info
             );
         }
 
@@ -230,41 +272,79 @@ impl BatchExecutor {
         crate::logging::log_display("=".repeat(80), crate::logging::LogLevel::Info);
         crate::logging::log_display(
             format!("  Total:    {}", summary.total),
-            crate::logging::LogLevel::Info,
+            crate::logging::LogLevel::Info
         );
         crate::logging::log_display(
-            format!(
-                "  {}",
-                Formatter::success(format!("Passed:   {}", summary.passed))
-            ),
-            crate::logging::LogLevel::Info,
+            format!("  {}", Formatter::success(format!("Passed:   {}", summary.passed))),
+            crate::logging::LogLevel::Info
         );
 
         if summary.failed > 0 {
             crate::logging::log_display(
-                format!(
-                    "  {}",
-                    Formatter::warning(format!("Failed:   {}", summary.failed))
-                ),
-                crate::logging::LogLevel::Warn,
+                format!("  {}", Formatter::warning(format!("Failed:   {}", summary.failed))),
+                crate::logging::LogLevel::Warn
             );
         }
 
         if summary.errors > 0 {
             crate::logging::log_display(
-                format!(
-                    "  {}",
-                    Formatter::error(format!("Errors:   {}", summary.errors))
-                ),
-                crate::logging::LogLevel::Error,
+                format!("  {}", Formatter::error(format!("Errors:   {}", summary.errors))),
+                crate::logging::LogLevel::Error
             );
         }
 
         crate::logging::log_display(
             format!("  Duration: {}ms", summary.total_duration_ms),
-            crate::logging::LogLevel::Info,
+            crate::logging::LogLevel::Info
         );
         crate::logging::log_display("=".repeat(80), crate::logging::LogLevel::Info);
+    }
+}
+
+/// Compare a result against an expected value.
+///
+/// In loose mode (default, `strict = false`):
+/// - If both strings parse as valid JSON, compare the decoded values so that
+///   formatting differences (`{"a":1}` vs `{ "a": 1 }`) and equivalent number
+///   representations (`1` vs `1.0`) are treated as equal.
+/// - Otherwise fall back to trimmed-string comparison.
+///
+/// In strict mode (`strict = true`) the raw strings must be identical.
+fn values_match(result: &str, expected: &str, strict: bool) -> bool {
+    if strict {
+        return result == expected;
+    }
+
+    // Semantic JSON comparison
+    if let (Ok(r), Ok(e)) = (
+        serde_json::from_str::<Value>(result),
+        serde_json::from_str::<Value>(expected),
+    ) {
+        return json_values_equal(&r, &e);
+    }
+
+    // Fallback: whitespace-normalised string comparison
+    result.trim() == expected.trim()
+}
+
+/// Recursively compare two JSON values, treating numerically equal numbers as
+/// equal regardless of whether they were parsed as integers or floats
+/// (e.g. `1` and `1.0` are considered the same).
+fn json_values_equal(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Number(n1), Value::Number(n2)) => n1.as_f64() == n2.as_f64(),
+        (Value::Array(a), Value::Array(b)) => {
+            a.len() == b.len()
+                && a.iter()
+                    .zip(b.iter())
+                    .all(|(x, y)| json_values_equal(x, y))
+        }
+        (Value::Object(a), Value::Object(b)) => {
+            a.len() == b.len()
+                && a.iter()
+                    .all(|(k, v)| b.get(k).map_or(false, |bv| json_values_equal(v, bv)))
+        }
+        _ => a == b,
     }
 }
 
@@ -275,15 +355,18 @@ impl From<BatchItemInput> for BatchItem {
                 args: json_value_to_text(args),
                 expected: None,
                 label: None,
+                strict: false,
             },
             BatchItemInput::Structured {
                 args,
                 expected,
                 label,
+                strict,
             } => Self {
                 args: json_value_to_text(args),
                 expected: expected.map(json_value_to_text),
                 label,
+                strict,
             },
         }
     }
@@ -302,10 +385,7 @@ fn truncate_for_table(value: &str, limit: usize) -> String {
         return value.to_string();
     }
 
-    let mut truncated = value
-        .chars()
-        .take(limit.saturating_sub(1))
-        .collect::<String>();
+    let mut truncated = value.chars().take(limit.saturating_sub(1)).collect::<String>();
     truncated.push('…');
     truncated
 }
@@ -316,7 +396,8 @@ mod tests {
 
     #[test]
     fn test_batch_item_deserialization() {
-        let json = r#"[
+        let json =
+            r#"[
             {"args": "[1, 2]", "expected": "3", "label": "Add 1+2"},
             {"args": "[5, 10]"}
         ]"#;
@@ -328,6 +409,43 @@ mod tests {
         assert_eq!(items[0].label, Some("Add 1+2".to_string()));
         assert_eq!(items[1].args, "[5, 10]");
         assert_eq!(items[1].expected, None);
+    }
+
+    #[test]
+    fn test_values_match_loose_json() {
+        // Different whitespace / key order still matches in loose mode
+        assert!(values_match(r#"{"a":1,"b":2}"#, r#"{ "b": 2, "a": 1 }"#, false));
+        assert!(values_match("42", "42", false));
+        // Equivalent numeric representations
+        assert!(values_match("1", "1.0", false));
+        // Trailing whitespace
+        assert!(values_match("hello ", "hello", false));
+    }
+
+    #[test]
+    fn test_values_match_strict() {
+        // Strict mode: exact bytes must match
+        assert!(values_match("42", "42", true));
+        assert!(!values_match(r#"{"a":1}"#, r#"{ "a": 1 }"#, true));
+        assert!(!values_match("hello ", "hello", true));
+    }
+
+    #[test]
+    fn test_values_match_non_json_loose() {
+        // Non-JSON falls back to trimmed comparison
+        assert!(values_match("  ok  ", "ok", false));
+        assert!(!values_match("ok", "fail", false));
+    }
+
+    #[test]
+    fn test_batch_item_strict_field() {
+        let json = r#"[
+            {"args": "[1]", "expected": "1", "strict": true},
+            {"args": "[2]", "expected": "2"}
+        ]"#;
+        let items: Vec<BatchItem> = serde_json::from_str(json).unwrap();
+        assert!(items[0].strict);
+        assert!(!items[1].strict);
     }
 
     #[test]
@@ -354,7 +472,7 @@ mod tests {
                 expected: Some("ok".to_string()),
                 passed: true,
                 duration_ms: 10,
-            },
+            }
         ];
 
         let summary = BatchExecutor::summarize(&results);
