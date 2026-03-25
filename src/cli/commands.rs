@@ -158,6 +158,12 @@ fn render_security_report(output: &AnalyzeCommandOutput) -> String {
             )
         );
         lines.push(format!("     {}", finding.description));
+        if let Some(confidence) = finding.confidence {
+            lines.push(format!("     Confidence: {:.0}%", confidence * 100.0));
+        }
+        if let Some(rationale) = &finding.rationale {
+            lines.push(format!("     Rationale: {}", rationale));
+        }
         lines.push(format!("     Remediation: {}", finding.remediation));
     }
 

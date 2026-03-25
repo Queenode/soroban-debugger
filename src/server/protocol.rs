@@ -17,7 +17,9 @@ pub struct DynamicTraceEvent {
     pub sequence: usize,
     pub kind: DynamicTraceEventKind,
     pub message: String,
+    pub caller: Option<String>,
     pub function: Option<String>,
+    pub call_depth: Option<usize>,
     pub storage_key: Option<String>,
     pub storage_value: Option<String>,
 }

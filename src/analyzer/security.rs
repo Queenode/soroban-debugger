@@ -20,6 +20,10 @@ pub struct SecurityFinding {
     pub location: String,
     pub description: String,
     pub remediation: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rationale: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -208,6 +212,8 @@ impl SecurityRule for HardcodedAddressRule {
                                     "Use Address::from_str from configuration or function \
                                      arguments instead of hardcoding."
                                         .to_string(),
+                                confidence: None,
+                                rationale: None,
                             });
                         }
                     }
@@ -239,6 +245,8 @@ impl SecurityRule for ArithmeticCheckRule {
                     location: format!("Instruction {}", i),
                     description: format!("Unchecked arithmetic operation detected: {:?}", instr),
                     remediation: "Ensure arithmetic operations are guarded with proper bounds checks or overflow handling.".to_string(),
+                    confidence: None,
+                    rationale: None,
                 });
             }
         }
@@ -321,6 +329,8 @@ impl SecurityRule for AuthorizationCheckRule {
                 location: "Dynamic trace".to_string(),
                 description: "Storage mutation detected without an authorization event in the execution trace.".to_string(),
                 remediation: "Ensure all sensitive functions call `address.require_auth()` before mutating state.".to_string(),
+                confidence: None,
+                rationale: None,
             });
         }
 
@@ -342,26 +352,22 @@ impl SecurityRule for ReentrancyPatternRule {
         _executor: &ContractExecutor,
         trace: &[DynamicTraceEvent]
     ) -> Result<Vec<SecurityFinding>> {
-        let mut findings = Vec::new();
-        let mut cross_call_seen = false;
-
-        for entry in trace {
-            if entry.kind == DynamicTraceEventKind::CrossContractCall {
-                cross_call_seen = true;
-            }
-            if cross_call_seen && entry.kind == DynamicTraceEventKind::StorageWrite {
-                findings.push(SecurityFinding {
-                    rule_id: self.name().to_string(),
-                    severity: Severity::Medium,
-                    location: format!("Trace event {}", entry.sequence),
-                    description: "Storage write detected after an external contract call. Possible reentrancy risk.".to_string(),
-                    remediation: "Follow checks-effects-interactions: finalize state before external calls.".to_string(),
-                });
-                break;
-            }
-        }
-        Ok(findings)
+        Ok(analyze_reentrancy_pattern_dynamic(trace))
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct FrameKey {
+    function: Option<String>,
+    call_depth: Option<usize>,
+}
+
+#[derive(Debug, Clone)]
+struct PendingCrossCall {
+    frame: Option<FrameKey>,
+    sequence: usize,
+    pre_call_write_seen: bool,
+    inferred: bool,
 }
 
 struct CrossContractImportRule;
@@ -414,6 +420,8 @@ impl SecurityRule for CrossContractImportRule {
                     matches.join(", ")
                 ),
                 remediation: "Review external call sites for reentrancy and authorization checks.".to_string(),
+                confidence: None,
+                rationale: None,
             }]
         )
     }
@@ -492,6 +500,8 @@ impl SecurityRule for UnboundedIterationRule {
                     analysis.storage_calls_inside_loops
                 ),
                 remediation: "Bound iteration over storage-backed collections (pagination, explicit limits, or capped batch size).".to_string(),
+                confidence: None,
+                rationale: None,
             }]
         )
     }
@@ -657,6 +667,127 @@ fn analyze_unbounded_iteration_dynamic(trace: &[DynamicTraceEvent]) -> Option<Se
             max_reads_for_one_key
         ),
         remediation: "Use explicit iteration bounds and pagination for storage traversal to avoid gas-denial risks.".to_string(),
+        confidence: None,
+        rationale: None,
+    })
+}
+
+fn analyze_reentrancy_pattern_dynamic(trace: &[DynamicTraceEvent]) -> Vec<SecurityFinding> {
+    let mut entries = trace.to_vec();
+    entries.sort_by_key(|entry| entry.sequence);
+
+    let mut findings = Vec::new();
+    let mut writes_seen_by_frame: HashMap<FrameKey, usize> = HashMap::new();
+    let mut last_known_frame: Option<FrameKey> = None;
+    let mut pending_cross_call: Option<PendingCrossCall> = None;
+
+    for entry in &entries {
+        let explicit_frame = frame_key_for(entry);
+        let active_frame = explicit_frame.clone().or_else(|| last_known_frame.clone());
+
+        match entry.kind {
+            DynamicTraceEventKind::FunctionCall => {
+                if let Some(frame) = explicit_frame {
+                    last_known_frame = Some(frame);
+                }
+            }
+            DynamicTraceEventKind::StorageWrite => {
+                if let Some(frame) = active_frame.clone() {
+                    *writes_seen_by_frame.entry(frame.clone()).or_insert(0) += 1;
+                    last_known_frame = Some(frame.clone());
+                }
+
+                let Some(pending) = pending_cross_call.as_ref() else {
+                    continue;
+                };
+
+                let same_frame = match (&pending.frame, &active_frame) {
+                    (Some(expected), Some(actual)) => expected == actual,
+                    _ => false,
+                };
+
+                let inferred_match =
+                    pending.inferred && pending.frame.is_none() && active_frame.is_none();
+
+                if !(same_frame || inferred_match) {
+                    continue;
+                }
+
+                if pending.pre_call_write_seen {
+                    pending_cross_call = None;
+                    continue;
+                }
+
+                let (confidence, rationale) = if same_frame {
+                    (
+                        0.92,
+                        format!(
+                            "Observed an external interaction at trace event {} and a later \
+                             storage write in the same call frame. This matches the classic \
+                             checks-effects-interactions violation shape.",
+                            pending.sequence
+                        ),
+                    )
+                } else {
+                    (
+                        0.42,
+                        format!(
+                            "Observed a global sequence of external call at trace event {} \
+                             followed by a storage write, but the trace lacked frame metadata. \
+                             Treat this as a low-confidence signal.",
+                            pending.sequence
+                        ),
+                    )
+                };
+
+                findings.push(SecurityFinding {
+                    rule_id: "reentrancy-pattern".to_string(),
+                    severity: if confidence >= 0.8 {
+                        Severity::High
+                    } else {
+                        Severity::Low
+                    },
+                    location: format!("Trace event {}", entry.sequence),
+                    description: "Storage write detected after an external contract call in the same execution frame. Possible reentrancy risk.".to_string(),
+                    remediation: "Follow checks-effects-interactions: finalize critical state before external calls, or isolate post-call writes to benign bookkeeping.".to_string(),
+                    confidence: Some(confidence),
+                    rationale: Some(rationale),
+                });
+                pending_cross_call = None;
+            }
+            DynamicTraceEventKind::CrossContractCall => {
+                let frame = active_frame.clone();
+                let pre_call_write_seen = frame
+                    .as_ref()
+                    .and_then(|key| writes_seen_by_frame.get(key).copied())
+                    .unwrap_or(0) > 0;
+
+                pending_cross_call = Some(PendingCrossCall {
+                    frame,
+                    sequence: entry.sequence,
+                    pre_call_write_seen,
+                    inferred: active_frame.is_none(),
+                });
+            }
+            _ => {
+                if let Some(frame) = active_frame {
+                    last_known_frame = Some(frame);
+                }
+            }
+        }
+    }
+
+    findings
+}
+
+fn frame_key_for(entry: &DynamicTraceEvent) -> Option<FrameKey> {
+    if entry.function.is_none() && entry.call_depth.is_none() {
+        return None;
+    }
+
+    Some(FrameKey {
+        function: entry.function.clone(),
+        call_depth: entry.call_depth,
     })
 }
 
@@ -1031,7 +1162,9 @@ mod tests {
                 sequence: i,
                 kind: DynamicTraceEventKind::StorageRead,
                 message: "contract_storage_get".to_string(),
+                caller: None,
                 function: Some("sweep".to_string()),
+                call_depth: Some(0),
                 storage_key: Some(format!("user:{}", i % 4)),
                 storage_value: None,
             });
@@ -1046,6 +1179,138 @@ mod tests {
     fn static_signal_false_for_non_wasm_bytes() {
         let signal = analyze_unbounded_iteration_static(&[1, 2, 3, 4, 5]);
         assert!(!signal.suspicious);
+    }
+
+    #[test]
+    fn reentrancy_rule_flags_same_frame_write_after_cross_contract_call() {
+        let findings = analyze_reentrancy_pattern_dynamic(&[
+            DynamicTraceEvent {
+                sequence: 1,
+                kind: DynamicTraceEventKind::FunctionCall,
+                message: "main -> withdraw".to_string(),
+                caller: Some("main".to_string()),
+                function: Some("withdraw".to_string()),
+                call_depth: Some(0),
+                storage_key: None,
+                storage_value: None,
+            },
+            DynamicTraceEvent {
+                sequence: 2,
+                kind: DynamicTraceEventKind::CrossContractCall,
+                message: "withdraw invokes token.transfer".to_string(),
+                caller: Some("main".to_string()),
+                function: Some("withdraw".to_string()),
+                call_depth: Some(0),
+                storage_key: None,
+                storage_value: None,
+            },
+            DynamicTraceEvent {
+                sequence: 3,
+                kind: DynamicTraceEventKind::StorageWrite,
+                message: "write balance".to_string(),
+                caller: Some("main".to_string()),
+                function: Some("withdraw".to_string()),
+                call_depth: Some(0),
+                storage_key: Some("balance:alice".to_string()),
+                storage_value: Some("0".to_string()),
+            },
+        ]);
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].rule_id, "reentrancy-pattern");
+        assert!(matches!(findings[0].severity, Severity::High));
+        assert!(findings[0].confidence.unwrap_or_default() >= 0.8);
+        assert!(findings[0]
+            .rationale
+            .as_deref()
+            .unwrap_or_default()
+            .contains("same call frame"));
+    }
+
+    #[test]
+    fn reentrancy_rule_skips_post_call_write_when_pre_call_effect_seen_in_same_frame() {
+        let findings = analyze_reentrancy_pattern_dynamic(&[
+            DynamicTraceEvent {
+                sequence: 1,
+                kind: DynamicTraceEventKind::FunctionCall,
+                message: "main -> settle".to_string(),
+                caller: Some("main".to_string()),
+                function: Some("settle".to_string()),
+                call_depth: Some(0),
+                storage_key: None,
+                storage_value: None,
+            },
+            DynamicTraceEvent {
+                sequence: 2,
+                kind: DynamicTraceEventKind::StorageWrite,
+                message: "mark settled".to_string(),
+                caller: Some("main".to_string()),
+                function: Some("settle".to_string()),
+                call_depth: Some(0),
+                storage_key: Some("settled:alice".to_string()),
+                storage_value: Some("true".to_string()),
+            },
+            DynamicTraceEvent {
+                sequence: 3,
+                kind: DynamicTraceEventKind::CrossContractCall,
+                message: "settle invokes payout".to_string(),
+                caller: Some("main".to_string()),
+                function: Some("settle".to_string()),
+                call_depth: Some(0),
+                storage_key: None,
+                storage_value: None,
+            },
+            DynamicTraceEvent {
+                sequence: 4,
+                kind: DynamicTraceEventKind::StorageWrite,
+                message: "emit bookkeeping marker".to_string(),
+                caller: Some("main".to_string()),
+                function: Some("settle".to_string()),
+                call_depth: Some(0),
+                storage_key: Some("audit:last_settle".to_string()),
+                storage_value: Some("1".to_string()),
+            },
+        ]);
+
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn reentrancy_rule_skips_write_in_different_frame_after_cross_contract_call() {
+        let findings = analyze_reentrancy_pattern_dynamic(&[
+            DynamicTraceEvent {
+                sequence: 1,
+                kind: DynamicTraceEventKind::FunctionCall,
+                message: "main -> withdraw".to_string(),
+                caller: Some("main".to_string()),
+                function: Some("withdraw".to_string()),
+                call_depth: Some(0),
+                storage_key: None,
+                storage_value: None,
+            },
+            DynamicTraceEvent {
+                sequence: 2,
+                kind: DynamicTraceEventKind::CrossContractCall,
+                message: "withdraw invokes token.transfer".to_string(),
+                caller: Some("main".to_string()),
+                function: Some("withdraw".to_string()),
+                call_depth: Some(0),
+                storage_key: None,
+                storage_value: None,
+            },
+            DynamicTraceEvent {
+                sequence: 3,
+                kind: DynamicTraceEventKind::StorageWrite,
+                message: "nested contract writes receipt".to_string(),
+                caller: Some("withdraw".to_string()),
+                function: Some("token.transfer".to_string()),
+                call_depth: Some(1),
+                storage_key: Some("receipt:1".to_string()),
+                storage_value: Some("ok".to_string()),
+            },
+        ]);
+
+        assert!(findings.is_empty());
     }
 
     // -----------------------------------------------------------------------
