@@ -33,7 +33,9 @@ fn symbolic_runs_against_counter_fixture() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Function: increment"))
-        .stdout(predicate::str::contains("Paths explored:"));
+        .stdout(predicate::str::contains("Paths explored:"))
+        .stdout(predicate::str::contains("Budget:"))
+        .stdout(predicate::str::contains("Truncation:"));
 }
 
 #[test]
@@ -55,8 +57,37 @@ fn symbolic_writes_scenario_toml() {
         .success();
 
     let written = fs::read_to_string(output.path()).unwrap();
+    assert!(written.contains("[metadata]"));
     assert!(written.contains("[[scenario]]"));
     assert!(written.contains("function = \"increment\""));
+}
+
+#[test]
+fn symbolic_cli_honors_caps_and_reports_truncation() {
+    let wasm = fixture_wasm("counter");
+
+    base_cmd()
+        .args([
+            "symbolic",
+            "--contract",
+            wasm.to_str().unwrap(),
+            "--function",
+            "increment",
+            "--profile",
+            "fast",
+            "--input-combination-cap",
+            "4",
+            "--path-cap",
+            "2",
+            "--timeout",
+            "30",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Budget: path_cap=2, input_combination_cap=4, timeout=30s"))
+        .stdout(predicate::str::contains("Truncation:"))
+        .stdout(predicate::str::contains("input combination cap reached"))
+        .stdout(predicate::str::contains("path exploration cap reached"));
 }
 
 #[test]

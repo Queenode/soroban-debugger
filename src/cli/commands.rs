@@ -1,3 +1,4 @@
+use crate::analyzer::symbolic::SymbolicConfig;
 use crate::analyzer::upgrade::{ CompatibilityReport, ExecutionDiff, UpgradeAnalyzer };
 use crate::analyzer::{ security::SecurityAnalyzer, symbolic::SymbolicAnalyzer };
 use crate::cli::args::{
@@ -14,6 +15,7 @@ use crate::cli::args::{
     ScenarioArgs,
     ServerArgs,
     SymbolicArgs,
+    SymbolicProfile,
     TuiArgs,
     UpgradeCheckArgs,
     Verbosity,
@@ -95,8 +97,29 @@ fn render_symbolic_report(report: &crate::analyzer::symbolic::SymbolicReport) ->
     let mut lines = vec![
         format!("Function: {}", report.function),
         format!("Paths explored: {}", report.paths_explored),
-        format!("Panics found: {}", report.panics_found)
+        format!("Panics found: {}", report.panics_found),
+        format!(
+            "Budget: path_cap={}, input_combination_cap={}, timeout={}s",
+            report.metadata.config.max_paths,
+            report.metadata.config.max_input_combinations,
+            report.metadata.config.timeout_secs
+        ),
+        format!(
+            "Input combinations: generated={}, attempted={}, distinct_paths={}",
+            report.metadata.generated_input_combinations,
+            report.metadata.attempted_input_combinations,
+            report.metadata.distinct_paths_recorded
+        ),
     ];
+
+    if report.metadata.truncation_reasons.is_empty() {
+        lines.push("Truncation: none".to_string());
+    } else {
+        lines.push(format!(
+            "Truncation: {}",
+            report.metadata.truncation_reasons.join("; ")
+        ));
+    }
 
     if report.paths.is_empty() {
         lines.push("No distinct execution paths were discovered.".to_string());
@@ -116,6 +139,28 @@ fn render_symbolic_report(report: &crate::analyzer::symbolic::SymbolicReport) ->
     }
 
     lines.join("\n")
+}
+
+fn symbolic_profile_config(profile: SymbolicProfile) -> SymbolicConfig {
+    match profile {
+        SymbolicProfile::Fast => SymbolicConfig::fast(),
+        SymbolicProfile::Balanced => SymbolicConfig::balanced(),
+        SymbolicProfile::Deep => SymbolicConfig::deep(),
+    }
+}
+
+fn symbolic_config_from_args(args: &SymbolicArgs) -> SymbolicConfig {
+    let mut config = symbolic_profile_config(args.profile);
+    if let Some(path_cap) = args.path_cap {
+        config.max_paths = path_cap;
+    }
+    if let Some(input_cap) = args.input_combination_cap {
+        config.max_input_combinations = input_cap;
+    }
+    if let Some(timeout) = args.timeout {
+        config.timeout_secs = timeout;
+    }
+    config
 }
 
 fn render_security_report(output: &AnalyzeCommandOutput) -> String {
@@ -1750,7 +1795,8 @@ pub fn symbolic(args: SymbolicArgs, _verbosity: Verbosity) -> Result<()> {
         .with_context(|| format!("Failed to read WASM file: {:?}", args.contract))?;
 
     let analyzer = SymbolicAnalyzer::new();
-    let report = analyzer.analyze(&wasm_file.bytes, &args.function)?;
+    let config = symbolic_config_from_args(&args);
+    let report = analyzer.analyze_with_config(&wasm_file.bytes, &args.function, &config)?;
 
     println!("{}", render_symbolic_report(&report));
 
