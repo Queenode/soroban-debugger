@@ -101,7 +101,7 @@ struct GeneratedInputs {
 /// Shuffles `items` in-place using a seeded Fisher-Yates algorithm backed by a
 /// simple 64-bit LCG.  Given the same seed and the same input slice the result
 /// is always identical, which is the property we rely on for `--replay`.
-fn seeded_shuffle(items: &mut Vec<String>, seed: u64) {
+fn seeded_shuffle(items: &mut [String], seed: u64) {
     let n = items.len();
     if n < 2 {
         return;
@@ -511,7 +511,11 @@ impl SymbolicAnalyzer {
         .unwrap();
         match report.metadata.seed {
             Some(seed) => writeln!(toml, "seed = {}", seed).unwrap(),
-            None => writeln!(toml, "# seed = <none> (add --seed N for reproducible shuffled order)").unwrap(),
+            None => writeln!(
+                toml,
+                "# seed = <none> (add --seed N for reproducible shuffled order)"
+            )
+            .unwrap(),
         }
         if !report.metadata.truncation_reasons.is_empty() {
             writeln!(toml, "truncation_reasons = [").unwrap();
@@ -640,6 +644,7 @@ mod tests {
             paths: Vec::new(),
             metadata: SymbolicReportMetadata {
                 config: SymbolicConfig::default(),
+                seed: None,
                 generated_input_combinations: 0,
                 attempted_input_combinations: 0,
                 distinct_paths_recorded: 0,
@@ -647,6 +652,7 @@ mod tests {
                 truncated_by_path_cap: false,
                 truncated_by_timeout: false,
                 truncation_reasons: Vec::new(),
+                seed: None,
             },
         };
         let mut seen_inputs = HashSet::new();
@@ -669,6 +675,7 @@ mod tests {
             paths: Vec::new(),
             metadata: SymbolicReportMetadata {
                 config: SymbolicConfig::default(),
+                seed: None,
                 generated_input_combinations: 0,
                 attempted_input_combinations: 0,
                 distinct_paths_recorded: 0,
@@ -676,6 +683,7 @@ mod tests {
                 truncated_by_path_cap: false,
                 truncated_by_timeout: false,
                 truncation_reasons: Vec::new(),
+                seed: None,
             },
         };
         let mut seen_inputs = HashSet::new();
@@ -753,7 +761,10 @@ mod tests {
         let mut b = original.clone();
         seeded_shuffle(&mut b, 2);
 
-        assert_ne!(a, b, "different seeds should (almost always) yield different orders");
+        assert_ne!(
+            a, b,
+            "different seeds should (almost always) yield different orders"
+        );
     }
 
     #[test]
@@ -766,14 +777,24 @@ mod tests {
             timeout_secs: 30,
             seed: Some(99),
         };
-        let config_b = SymbolicConfig { seed: Some(99), ..config_a.clone() };
+        let config_b = SymbolicConfig {
+            seed: Some(99),
+            ..config_a.clone()
+        };
 
-        let report_a = analyzer.analyze_with_config(&wasm, "entry", &config_a).unwrap();
-        let report_b = analyzer.analyze_with_config(&wasm, "entry", &config_b).unwrap();
+        let report_a = analyzer
+            .analyze_with_config(&wasm, "entry", &config_a)
+            .unwrap();
+        let report_b = analyzer
+            .analyze_with_config(&wasm, "entry", &config_b)
+            .unwrap();
 
         let inputs_a: Vec<_> = report_a.paths.iter().map(|p| p.inputs.clone()).collect();
         let inputs_b: Vec<_> = report_b.paths.iter().map(|p| p.inputs.clone()).collect();
-        assert_eq!(inputs_a, inputs_b, "same seed must produce the same exploration order");
+        assert_eq!(
+            inputs_a, inputs_b,
+            "same seed must produce the same exploration order"
+        );
         assert_eq!(report_a.metadata.seed, Some(99));
     }
 
@@ -788,7 +809,9 @@ mod tests {
             seed: None,
         };
 
-        let report = analyzer.analyze_with_config(&wasm, "entry", &config).unwrap();
+        let report = analyzer
+            .analyze_with_config(&wasm, "entry", &config)
+            .unwrap();
         assert_eq!(report.metadata.seed, None);
     }
 
@@ -806,6 +829,7 @@ mod tests {
             }],
             metadata: SymbolicReportMetadata {
                 config: SymbolicConfig::fast(),
+                seed: None,
                 generated_input_combinations: 10,
                 attempted_input_combinations: 1,
                 distinct_paths_recorded: 1,
@@ -815,6 +839,7 @@ mod tests {
                 truncation_reasons: vec![
                     "input combination cap reached at 64 generated combinations".to_string(),
                 ],
+                seed: None,
             },
         };
 

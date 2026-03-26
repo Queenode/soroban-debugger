@@ -81,7 +81,9 @@ pub enum DynamicTraceEventKind {
     #[default]
     Diagnostic,
     FunctionCall,
+    /// Read-side storage pressure feeds unbounded-iteration analysis.
     StorageRead,
+    /// Write-side storage pressure feeds storage-write-pressure analysis.
     StorageWrite,
     Authorization,
     CrossContractCall,
@@ -96,10 +98,14 @@ pub struct DynamicTraceEvent {
     pub message: String,
     pub caller: Option<String>,
     pub function: Option<String>,
-    #[serde(default)]
-    pub call_depth: Option<usize>,
+    pub call_depth: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub storage_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub storage_value: Option<String>,
+    /// Actor address associated with this event (e.g., the address being authorized).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
 }
 
 /// Source location information (file, line, column)
@@ -221,6 +227,9 @@ pub enum DebugRequest {
 
     /// Disconnect
     Disconnect,
+
+    /// Cancel a running execution
+    Cancel,
 
     /// Catch-all for forward compatibility
     #[serde(other)]
@@ -350,6 +359,9 @@ pub enum DebugResponse {
     /// Disconnected
     Disconnected,
 
+    /// Cancel acknowledged
+    CancelAck,
+
     /// Catch-all for forward compatibility
     #[serde(other)]
     Unknown,
@@ -388,10 +400,29 @@ impl DebugMessage {
     /// Parse a JSON string into a DebugMessage with field-aware error reporting.
     pub fn parse(json: &str) -> std::result::Result<Self, String> {
         let deserializer = &mut serde_json::Deserializer::from_str(json);
-        serde_path_to_error::deserialize(deserializer).map_err(|e| {
-            format!("Protocol error at '{}': {}", e.path(), e.inner())
-        })
+        serde_path_to_error::deserialize(deserializer)
+            .map_err(|e| format!("Protocol error at '{}': {}", e.path(), e.inner()))
     }
+}
+
+use tokio::io::AsyncWriteExt;
+
+/// Helper to send a response to a writer
+pub async fn send_response<S>(
+    writer: &mut S,
+    response: DebugMessage,
+) -> std::result::Result<(), String>
+where
+    S: tokio::io::AsyncWrite + Unpin,
+{
+    let json = serde_json::to_string(&response).map_err(|e| e.to_string())?;
+    writer
+        .write_all(json.as_bytes())
+        .await
+        .map_err(|e| e.to_string())?;
+    writer.write_all(b"\n").await.map_err(|e| e.to_string())?;
+    writer.flush().await.map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -466,7 +497,11 @@ mod tests {
             }
         }"#;
         let err = DebugMessage::parse(json).unwrap_err();
-        assert!(err.contains("request.client_version"), "Error should mention missing field: {}", err);
+        assert!(
+            err.contains("request.client_version"),
+            "Error should mention missing field: {}",
+            err
+        );
     }
 
     #[test]
