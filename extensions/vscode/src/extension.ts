@@ -1,6 +1,7 @@
 import * as vscode from 'vscode'
 import {
   DebuggerProcessConfig,
+  getDebuggerVersionInfo,
   LaunchPreflightIssue,
   LaunchPreflightQuickFix,
   validateLaunchConfig,
@@ -14,6 +15,11 @@ import {
 } from './preflightCommand'
 import { diagnoseBreakpoints } from './dap/sourceBreakpoints'
 import { SorobanLaunchProgressReporter } from './launchProgress';
+import {
+  fromQuickPickLabel,
+  runLaunchPreflightCommand,
+  toQuickPickLabel
+} from './preflightCommand';
 
 type SorobanLaunchConfig = vscode.DebugConfiguration & DebuggerProcessConfig
 const RUN_LAUNCH_PREFLIGHT_COMMAND = 'soroban-debugger.runLaunchPreflight'
@@ -24,7 +30,7 @@ class SorobanDebugConfigurationProvider
 {
   async resolveDebugConfiguration(
     folder: vscode.WorkspaceFolder | undefined,
-    config: SorobanLaunchConfig
+    config: SorobanLaunchConfig,
   ): Promise<vscode.DebugConfiguration | null | undefined> {
     if (!config.type && !config.request && !config.name) {
       return this.createDefaultLaunchConfig(folder)
@@ -48,7 +54,7 @@ class SorobanDebugConfigurationProvider
       return config
     }
 
-    await showPreflightIssueAndApplyFix(preflight.issues[0], folder)
+    await showPreflightIssueAndApplyFix(preflight.issues[0], folder, config.name);
 
     return undefined
   }
@@ -62,6 +68,7 @@ class SorobanDebugConfigurationProvider
 
 let logManager: LogManager | undefined
 let launchProgressReporter: SorobanLaunchProgressReporter | undefined;
+let versionOutputChannel: vscode.OutputChannel | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
   logManager = new LogManager(context)
@@ -69,11 +76,32 @@ export function activate(context: vscode.ExtensionContext): void {
   const factory = new SorobanDebugAdapterDescriptorFactory(context, logManager, launchProgressReporter);
   const configurationProvider = new SorobanDebugConfigurationProvider()
 
+  const sessionStartDisposable = vscode.debug.onDidStartDebugSession(
+    (session) => {
+      if (session.type !== "soroban") {
+        return;
+      }
+
+      showVersionInfo(
+        `backend: unknown protocol: ${WIRE_PROTOCOL_MIN_VERSION}..=${WIRE_PROTOCOL_MAX_VERSION}`,
+      );
+    },
+  );
+
   context.subscriptions.push(
-    vscode.debug.registerDebugAdapterDescriptorFactory('soroban', factory),
-    vscode.debug.registerDebugConfigurationProvider('soroban', configurationProvider),
+    vscode.debug.registerDebugAdapterDescriptorFactory("soroban", factory),
+    vscode.debug.registerDebugConfigurationProvider(
+      "soroban",
+      configurationProvider,
+    ),
+    vscode.commands.registerCommand(
+      RUN_LAUNCH_PREFLIGHT_COMMAND,
+      runStandaloneLaunchPreflight,
+    ),
+    sessionStartDisposable,
+    versionOutputChannel,
     factory,
-    launchProgressReporter
+    launchProgressReporter,
   );
     vscode.commands.registerCommand(RUN_LAUNCH_PREFLIGHT_COMMAND, async () => {
       await runStandaloneLaunchPreflight()
@@ -214,12 +242,12 @@ function createDefaultLaunchConfig(
   workspaceFolder: string
 ): vscode.DebugConfiguration {
   return {
-    name: 'Soroban: Debug Contract',
-    type: 'soroban',
-    request: 'launch',
+    name: "Soroban: Debug Contract",
+    type: "soroban",
+    request: "launch",
     contractPath: `${workspaceFolder}/target/wasm32-unknown-unknown/release/contract.wasm`,
     snapshotPath: `${workspaceFolder}/snapshot.json`,
-    entrypoint: 'main',
+    entrypoint: "main",
     args: [],
     trace: false,
     binaryPath: `${workspaceFolder}/target/debug/${process.platform === 'win32' ? 'soroban-debug.exe' : 'soroban-debug'}`,
@@ -263,22 +291,19 @@ async function runStandaloneLaunchPreflight(): Promise<void> {
       )
       return picked?.candidate
     },
-    validateLaunchConfig: async (config) =>
-      validateLaunchConfig(config as SorobanLaunchConfig),
-    showInformationMessage: async (message, ...actions) =>
-      vscode.window.showInformationMessage(message, ...actions),
-    showWarningMessage: async (message, ...actions) =>
-      vscode.window.showWarningMessage(message, ...actions),
-    showErrorMessage: async (message, ...actions) =>
-      vscode.window.showErrorMessage(message, ...actions),
-    applyQuickFix: async (quickFix, folder) =>
-      applyQuickFix(quickFix, folder as vscode.WorkspaceFolder | undefined),
-  })
+    validateLaunchConfig: async (config) => validateLaunchConfig(config as SorobanLaunchConfig),
+    showInformationMessage: async (message, ...actions) => vscode.window.showInformationMessage(message, ...actions),
+    showWarningMessage: async (message, ...actions) => vscode.window.showWarningMessage(message, ...actions),
+    showErrorMessage: async (message, ...actions) => vscode.window.showErrorMessage(message, ...actions),
+    applyQuickFix: async (quickFix, folder, configName, field) =>
+      applyQuickFix(quickFix, folder as vscode.WorkspaceFolder | undefined, configName, field)
+  });
 }
 
 async function showPreflightIssueAndApplyFix(
   issue: LaunchPreflightIssue,
-  folder: vscode.WorkspaceFolder | undefined
+  folder: vscode.WorkspaceFolder | undefined,
+  configName?: string
 ): Promise<void> {
   const actions = issue.quickFixes.map(toQuickPickLabel)
   const selected = await vscode.window.showErrorMessage(
@@ -287,24 +312,26 @@ async function showPreflightIssueAndApplyFix(
   )
   const quickFix = fromQuickPickLabel(selected)
   if (quickFix) {
-    await applyQuickFix(quickFix, folder)
+    await applyQuickFix(quickFix, folder, configName, issue.field);
   }
 }
 
 async function applyQuickFix(
   quickFix: LaunchPreflightQuickFix,
-  folder: vscode.WorkspaceFolder | undefined
+  folder: vscode.WorkspaceFolder | undefined,
+  configName?: string,
+  field?: string
 ): Promise<void> {
   switch (quickFix) {
     case 'pickBinary':
-      await pickFile('Select soroban-debug binary', ['exe', 'bin', ''])
-      return
+      await pickFile('Select soroban-debug binary', ['exe', 'bin', ''], folder, configName, field);
+      return;
     case 'pickContract':
-      await pickFile('Select Soroban contract WASM', ['wasm'])
-      return
+      await pickFile('Select Soroban contract WASM', ['wasm'], folder, configName, field);
+      return;
     case 'pickSnapshot':
-      await pickFile('Select snapshot JSON', ['json'])
-      return
+      await pickFile('Select snapshot JSON', ['json'], folder, configName, field);
+      return;
     case 'openLaunchConfig':
       await vscode.commands.executeCommand('workbench.action.debug.configure')
       return
@@ -322,8 +349,14 @@ async function applyQuickFix(
   }
 }
 
-async function pickFile(title: string, extensions: string[]): Promise<void> {
-  const filters = extensions.filter((ext) => ext.length > 0)
+async function pickFile(
+  title: string,
+  extensions: string[],
+  folder: vscode.WorkspaceFolder | undefined,
+  configName?: string,
+  field?: string
+): Promise<void> {
+  const filters = extensions.filter((ext) => ext.length > 0);
   const selected = await vscode.window.showOpenDialog({
     canSelectFiles: true,
     canSelectFolders: false,
@@ -333,18 +366,63 @@ async function pickFile(title: string, extensions: string[]): Promise<void> {
   })
 
   if (selected && selected.length > 0) {
-    await vscode.env.clipboard.writeText(selected[0].fsPath)
-    await vscode.window
-      .showInformationMessage(
-        `Selected path copied to clipboard: ${selected[0].fsPath}`,
-        'Open launch.json'
-      )
-      .then(async (choice) => {
-        if (choice === 'Open launch.json') {
-          await vscode.commands.executeCommand(
-            'workbench.action.debug.configure'
-          )
-        }
-      })
+    const filePath = selected[0].fsPath;
+
+    if (configName && field) {
+      const choice = await vscode.window.showInformationMessage(
+        `Selected path: ${filePath}. Do you want to update "${configName}" in launch.json directly?`,
+        'Update launch.json',
+        'Copy to Clipboard'
+      );
+
+      if (choice === 'Update launch.json') {
+        await patchLaunchConfig(folder, configName, field, filePath);
+        await vscode.window.showInformationMessage(`Updated ${field} in "${configName}" launch configuration.`);
+        return;
+      }
+    }
+
+    await vscode.env.clipboard.writeText(filePath);
+    await vscode.window.showInformationMessage(
+      `Selected path copied to clipboard: ${filePath}`,
+      'Open launch.json'
+    ).then(async (choice) => {
+      if (choice === 'Open launch.json') {
+        await vscode.commands.executeCommand('workbench.action.debug.configure');
+      }
+    });
+  }
+}
+
+async function patchLaunchConfig(
+  folder: vscode.WorkspaceFolder | undefined,
+  configName: string,
+  field: string,
+  value: any
+): Promise<void> {
+  const settings = vscode.workspace.getConfiguration('launch', folder);
+  const configurations = settings.get<any[]>('configurations') || [];
+  const index = configurations.findIndex((c) => c.name === configName);
+
+  if (index !== -1) {
+    const updatedConfigurations = [...configurations];
+    updatedConfigurations[index] = {
+      ...updatedConfigurations[index],
+      [field]: value
+    };
+    await settings.update('configurations', updatedConfigurations, vscode.ConfigurationTarget.WorkspaceFolder);
+  } else {
+    // If not found in workspace folder, try global (though usually it should be in workspace folder for debugging)
+    const globalSettings = vscode.workspace.getConfiguration('launch');
+    const globalConfigs = globalSettings.get<any[]>('configurations') || [];
+    const globalIndex = globalConfigs.findIndex((c) => c.name === configName);
+    if (globalIndex !== -1) {
+      const updatedGlobalConfigs = [...globalConfigs];
+      updatedGlobalConfigs[globalIndex] = {
+        ...updatedGlobalConfigs[globalIndex],
+        [field]: value
+      };
+      await globalSettings.update('configurations', updatedGlobalConfigs, vscode.ConfigurationTarget.Workspace);
+    }
   }
 }

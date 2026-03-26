@@ -1,4 +1,6 @@
 use assert_cmd::Command;
+use assert_cmd::cargo::CommandCargoExt;
+use assert_cmd::Command;
 use predicates::prelude::*;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -21,14 +23,14 @@ fn test_remote_run_execution() {
 
         let fixtures_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
         if cfg!(windows) {
-            let status = Command::new("powershell")
+            let status = std::process::Command::new("powershell")
                 .current_dir(&fixtures_dir)
                 .args(["-ExecutionPolicy", "Bypass", "-File", "build.ps1"])
                 .status()
                 .expect("Failed to run build.ps1");
             assert!(status.success(), "build.ps1 failed");
         } else {
-            let status = Command::new("bash")
+            let status = std::process::Command::new("bash")
                 .current_dir(&fixtures_dir)
                 .args(["./build.sh"])
                 .status()
@@ -45,7 +47,7 @@ fn test_remote_run_execution() {
     }
 
     // Start server in background
-    let mut server_cmd = Command::cargo_bin("soroban-debug").unwrap();
+    let mut server_cmd = std::process::Command::cargo_bin("soroban-debug").unwrap();
     let mut server_child = server_cmd
         .arg("server")
         .arg("--port")
@@ -59,7 +61,7 @@ fn test_remote_run_execution() {
     std::thread::sleep(Duration::from_millis(1500));
 
     // Smoke-test ping through the `run --remote` path:
-    let ping_cmd = Command::cargo_bin("soroban-debug").unwrap();
+    let mut ping_cmd = Command::cargo_bin("soroban-debug").unwrap();
     ping_cmd
         .arg("run")
         .arg("--remote")
@@ -88,6 +90,7 @@ fn test_remote_run_execution() {
 
     // Kill server
     server_child.kill().unwrap();
+    let _ = server_child.wait();
 
     // The counter.wasm might just output 1 on first increment
     // Let's just assert that it executed successfully rather than checking the exact value if we are unsure

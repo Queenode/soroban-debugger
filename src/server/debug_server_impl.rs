@@ -43,9 +43,7 @@ impl DebugServer {
                 .await
                 .map_err(|e| crate::DebuggerError::ExecutionError(format!("Accept failed: {e}")))?;
             let token = self.token.clone();
-            tokio::spawn(async move {
-                let _ = handle_connection(stream, token).await;
-            });
+            let _ = handle_connection(stream, token).await;
         }
     }
 }

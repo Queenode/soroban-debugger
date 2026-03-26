@@ -1,4 +1,5 @@
 import { isLoopbackAvailable } from './networkHelper'
+import { runDapE2ESuite, runSmokeSuite } from './suites';
 import * as assert from 'assert'
 import { ChildProcess, spawn } from 'child_process'
 import * as fs from 'fs'
@@ -166,6 +167,9 @@ async function main(): Promise<void> {
     console.warn('⚠️ Skipping VS Code E2E tests: Network loopback is restricted in this environment.');
     process.exit(0); // Exit successfully, treating it as a graceful skip
   }
+
+  await runSmokeSuite();
+  await runDapE2ESuite();
   
   const compatibilityMessage = formatProtocolMismatchMessage({
     extensionVersion: '0.1.0',
@@ -999,8 +1003,6 @@ async function runDapLaunchErrorE2E(
   } finally {
     client.dispose()
   }
-}
-
 main().catch((error) => {
   console.error(error)
   process.exit(1)

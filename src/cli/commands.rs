@@ -1,12 +1,11 @@
+use crate::analyzer::security::{AnalyzerFilter, RuleMetadata, SecurityAnalyzer, Severity};
+use crate::analyzer::symbolic::{SymbolicAnalyzer, SymbolicConfig};
 use crate::analyzer::upgrade::{CompatibilityReport, ExecutionDiff, UpgradeAnalyzer};
-use crate::analyzer::{
-    security::{AnalyzerFilter, SecurityAnalyzer, Severity},
-    symbolic::SymbolicAnalyzer,
-};
+use crate::analyzer::{security::{AnalyzerFilter, SecurityAnalyzer, Severity}, symbolic::{SymbolicAnalyzer, SymbolicConfig}};
 use crate::cli::args::{
     AnalyzeArgs, CompareArgs, HistoryPruneArgs, InspectArgs, InteractiveArgs, OptimizeArgs,
     ProfileArgs, RemoteArgs, ReplArgs, ReplayArgs, RunArgs, ScenarioArgs, ServerArgs, SymbolicArgs,
-    TuiArgs, UpgradeCheckArgs, Verbosity,
+    SymbolicProfile, TuiArgs, UpgradeCheckArgs, Verbosity,
 };
 use crate::debugger::engine::DebuggerEngine;
 use crate::debugger::instruction_pointer::StepMode;
@@ -22,6 +21,7 @@ use crate::ui::formatter::Formatter;
 use crate::ui::{run_dashboard, DebuggerUI};
 use crate::{DebuggerError, Result};
 use miette::WrapErr;
+use std::collections::HashMap;
 use std::fs;
 
 fn print_info(message: impl AsRef<str>) {
@@ -75,9 +75,11 @@ struct DynamicAnalysisMetadata {
 
 #[derive(serde::Serialize)]
 struct AnalyzeCommandOutput {
-    findings: Vec<crate::analyzer::security::SecurityFinding>,
-    dynamic_analysis: Option<DynamicAnalysisMetadata>,
-    warnings: Vec<String>,
+    pub schema_version: String,
+    pub findings: Vec<crate::analyzer::security::SecurityFinding>,
+    pub rules: HashMap<String, RuleMetadata>,
+    pub dynamic_analysis: Option<DynamicAnalysisMetadata>,
+    pub warnings: Vec<String>,
 }
 
 fn render_symbolic_report(report: &crate::analyzer::symbolic::SymbolicReport) -> String {
@@ -151,6 +153,17 @@ fn symbolic_config_from_args(args: &SymbolicArgs) -> SymbolicConfig {
     }
     // --replay is a user-facing alias for --seed (both set the exploration seed).
     config.seed = args.seed.or(args.replay);
+    
+    // Load storage seed from file if provided
+    if let Some(ref storage_path) = args.storage_seed {
+        let storage_json = std::fs::read_to_string(storage_path)
+            .unwrap_or_else(|e| {
+                eprintln!("Failed to read storage seed file {:?}: {}", storage_path, e);
+                std::process::exit(1);
+            });
+        config.storage_seed = Some(storage_json);
+    }
+    
     config
 }
 
@@ -207,11 +220,10 @@ fn render_security_report(output: &AnalyzeCommandOutput) -> String {
     lines.join("\n")
 }
 
-/// Run instruction-level stepping mode.
 fn run_instruction_stepping(
-    _engine: &mut DebuggerEngine,
-    _function: &str,
-    _args: Option<&str>,
+    engine: &mut DebuggerEngine,
+    function: &str,
+    args: Option<&str>,
 ) -> Result<()> {
     logging::log_display(
         "\n=== Instruction Stepping Mode ===",
@@ -951,6 +963,7 @@ pub fn run(args: RunArgs, verbosity: Verbosity) -> Result<()> {
 
     if args.is_json_output() {
         let mut output = serde_json::json!({
+            "schema_version": "1.0",
             "status": "success",
             "result": result,
             "sha256": wasm_hash,
@@ -1609,6 +1622,10 @@ pub fn profile(args: ProfileArgs) -> Result<()> {
     // Create executor
     let mut executor = ContractExecutor::new(wasm_bytes)?;
 
+    // Apply timeout — consistent with run, interactive, and analyze.
+    // A value of 0 disables the timeout.
+    executor.set_timeout(args.timeout);
+
     // Initial storage (optional)
     if let Some(storage_json) = &args.storage {
         let storage = parse_storage(storage_json)?;
@@ -1856,13 +1873,15 @@ pub fn server(args: ServerArgs) -> Result<()> {
         "Starting remote debug server on port {}",
         args.port
     ));
-    if args.token.is_some() {
+    if let Some(token) = &args.token {
         print_info("Token authentication enabled");
-        if token.trim().len() < 16 {
-            print_warning(
-                "Remote debug token is shorter than 16 characters. Prefer at least 16 characters \
-                 and ideally a random 32-byte token.",
-            );
+        if let Some(t) = &args.token {
+            if t.trim().len() < 16 {
+                print_warning(
+                    "Remote debug token is shorter than 16 characters. Prefer at least 16 characters \
+                     and ideally a random 32-byte token.",
+                );
+            }
         }
     } else {
         print_info("Token authentication disabled");
@@ -2000,6 +2019,15 @@ pub fn interactive(args: InteractiveArgs, _verbosity: Verbosity) -> Result<()> {
     }
 
     print_info("Starting interactive session (type 'help' for commands)");
+    // Show paused file/line if available
+    if engine.is_paused() {
+        if let Some(loc) = engine.current_source_location() {
+            let file = loc.file.display();
+            let line = loc.line;
+            let col = loc.column.map(|c| format!(":{}", c)).unwrap_or_default();
+            print_info(format!("Paused at: {}:{}{}", file, line, col));
+        }
+    }
     let mut ui = DebuggerUI::new(engine)?;
     ui.queue_execution(args.function.clone(), parsed_args);
     ui.run()
@@ -2176,7 +2204,9 @@ pub fn analyze(args: AnalyzeArgs, _verbosity: Verbosity) -> Result<()> {
         &filter,
     )?;
     let output = AnalyzeCommandOutput {
+        schema_version: "1.0".to_string(),
         findings: report.findings,
+        rules: report.rules,
         dynamic_analysis,
         warnings,
     };
@@ -2353,9 +2383,7 @@ pub fn history_prune(args: HistoryPruneArgs, global_policy: RetentionPolicy) -> 
     } else {
         let PruneReport { removed, remaining } = manager.prune_history(&policy)?;
         if removed == 0 {
-            println!(
-                "History is within the retention limit. Nothing removed ({remaining} records)."
-            );
+            println!("History is within the retention limit. Nothing removed ({remaining} records).");
         } else {
             println!("Removed {removed} record(s). {remaining} record(s) remaining.");
         }
