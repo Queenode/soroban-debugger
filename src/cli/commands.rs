@@ -912,7 +912,7 @@ pub fn run(args: RunArgs, verbosity: Verbosity) -> Result<()> {
         }
 
         let output = serde_json::json!({
-            "schema_version": crate::output::SCHEMA_VERSION,
+            "schema_version": "1.0",
             "command": "run",
             "status": "success",
             "result": result_obj,
@@ -929,7 +929,7 @@ pub fn run(args: RunArgs, verbosity: Verbosity) -> Result<()> {
             Ok(json) => println!("{}", json),
             Err(e) => {
                 let err_output = serde_json::json!({
-                    "schema_version": crate::output::SCHEMA_VERSION,
+                    "schema_version": "1.0",
                     "command": "run",
                     "status": "error",
                     "result": serde_json::Value::Null,
