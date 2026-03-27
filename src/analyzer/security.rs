@@ -1488,7 +1488,7 @@ fn frame_key_for(entry: &DynamicTraceEvent) -> Option<FrameKey> {
     let function = entry.function.clone()?;
 
     Some(FrameKey {
-        function,
+        function: Some(function),
         call_depth: entry.call_depth,
     })
 }
