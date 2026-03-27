@@ -705,7 +705,10 @@ pub fn load_wasm<P: AsRef<Path>>(path: P) -> Result<WasmFile> {
 pub fn verify_wasm_hash(computed_hash: &str, expected_hash: Option<&String>) -> Result<()> {
     if let Some(expected) = expected_hash {
         if expected.to_lowercase() != computed_hash {
-            return Err(crate::DebuggerError::ChecksumMismatch(expected.clone(), computed_hash.to_string())
+            return Err(crate::DebuggerError::ChecksumMismatch(
+                expected.clone(),
+                computed_hash.to_string(),
+            )
             .into());
         }
     }

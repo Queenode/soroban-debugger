@@ -686,10 +686,10 @@ impl SendFailure {
                 "{} failed: connection closed by peer",
                 operation
             )),
-            SendFailure::Timeout { stage, timeout } => DebuggerError::RequestTimeout {
-                operation: format!("{} ({})", operation, stage),
-                timeout_ms: timeout.as_millis() as u64,
-            },
+            SendFailure::Timeout { stage, timeout } => DebuggerError::RequestTimeout(
+                format!("{} ({})", operation, stage),
+                timeout.as_millis() as u64,
+            ),
             SendFailure::Io { stage, source } => DebuggerError::NetworkError(format!(
                 "{} failed during {}: {}",
                 operation, stage, source

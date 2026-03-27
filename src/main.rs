@@ -139,15 +139,6 @@ fn main() -> miette::Result<()> {
     if let Some(ref history_file) = cli.history_file {
         std::env::set_var("SOROBAN_DEBUG_HISTORY_FILE", history_file);
     }
-    if let Some(max_records) = cli.history_max_records {
-        std::env::set_var("SOROBAN_DEBUG_HISTORY_MAX_RECORDS", max_records.to_string());
-    }
-    if let Some(max_age_days) = cli.history_max_age_days {
-        std::env::set_var(
-            "SOROBAN_DEBUG_HISTORY_MAX_AGE_DAYS",
-            max_age_days.to_string(),
-        );
-    }
     if should_show_banner(&cli) {
         print_banner();
     }
@@ -204,13 +195,6 @@ fn main() -> miette::Result<()> {
         Some(Commands::Analyze(args)) => soroban_debugger::cli::commands::analyze(args, verbosity),
         Some(Commands::Scenario(args)) => {
             soroban_debugger::cli::commands::scenario(args, verbosity)
-        }
-        Some(Commands::HistoryPrune(args)) => {
-            let global_policy = soroban_debugger::history::RetentionPolicy {
-                max_records: cli.history_max_records,
-                max_age_days: cli.history_max_age_days,
-            };
-            soroban_debugger::cli::commands::history_prune(args, global_policy)
         }
         Some(Commands::Repl(mut args)) => {
             args.merge_config(&config);
@@ -276,6 +260,8 @@ fn main() -> miette::Result<()> {
                         format: soroban_debugger::cli::args::OutputFormat::Pretty,
                         expected_hash: None,
                         dependency_graph: None,
+                        source_map_diagnostics: false,
+                        source_map_limit: 20,
                     },
                     verbosity,
                 );
