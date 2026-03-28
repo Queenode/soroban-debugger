@@ -5,7 +5,6 @@ mod fixtures;
 fn test_debugger_engine_current_source_location() {
     use soroban_debugger::debugger::engine::DebuggerEngine;
     use soroban_debugger::runtime::executor::ContractExecutor;
-    use soroban_debugger::debugger::source_map::SourceLocation;
 
     // Use a real fixture WASM instead of create_test_wasm to satisfy host requirements (metadata section)
     let wasm_path = fixtures::get_fixture_path("counter");

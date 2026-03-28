@@ -1,7 +1,6 @@
 import * as vscode from 'vscode'
 import {
   DebuggerProcessConfig,
-  getDebuggerVersionInfo,
   LaunchPreflightIssue,
   LaunchPreflightQuickFix,
   validateLaunchConfig,
@@ -14,12 +13,7 @@ import {
   toQuickPickLabel,
 } from './preflightCommand'
 import { diagnoseBreakpoints } from './dap/sourceBreakpoints'
-import { SorobanLaunchProgressReporter } from './launchProgress';
-import {
-  fromQuickPickLabel,
-  runLaunchPreflightCommand,
-  toQuickPickLabel
-} from './preflightCommand';
+import { SorobanLaunchProgressReporter } from './launchProgress'
 
 type SorobanLaunchConfig = vscode.DebugConfiguration & DebuggerProcessConfig
 const RUN_LAUNCH_PREFLIGHT_COMMAND = 'soroban-debugger.runLaunchPreflight'
@@ -67,54 +61,38 @@ class SorobanDebugConfigurationProvider
 }
 
 let logManager: LogManager | undefined
-let launchProgressReporter: SorobanLaunchProgressReporter | undefined;
-let versionOutputChannel: vscode.OutputChannel | undefined;
+let launchProgressReporter: SorobanLaunchProgressReporter | undefined
 
 export function activate(context: vscode.ExtensionContext): void {
   logManager = new LogManager(context)
-  launchProgressReporter = new SorobanLaunchProgressReporter();
-  const factory = new SorobanDebugAdapterDescriptorFactory(context, logManager, launchProgressReporter);
+  launchProgressReporter = new SorobanLaunchProgressReporter()
+  const factory = new SorobanDebugAdapterDescriptorFactory(
+    context,
+    logManager,
+    launchProgressReporter
+  )
   const configurationProvider = new SorobanDebugConfigurationProvider()
 
-  const sessionStartDisposable = vscode.debug.onDidStartDebugSession(
-    (session) => {
-      if (session.type !== "soroban") {
-        return;
-      }
-
-      showVersionInfo(
-        `backend: unknown protocol: ${WIRE_PROTOCOL_MIN_VERSION}..=${WIRE_PROTOCOL_MAX_VERSION}`,
-      );
-    },
-  );
-
   context.subscriptions.push(
-    vscode.debug.registerDebugAdapterDescriptorFactory("soroban", factory),
+    vscode.debug.registerDebugAdapterDescriptorFactory('soroban', factory),
     vscode.debug.registerDebugConfigurationProvider(
-      "soroban",
-      configurationProvider,
+      'soroban',
+      configurationProvider
     ),
     vscode.commands.registerCommand(
       RUN_LAUNCH_PREFLIGHT_COMMAND,
-      runStandaloneLaunchPreflight,
+      runStandaloneLaunchPreflight
     ),
-    sessionStartDisposable,
-    versionOutputChannel,
-    factory,
-    launchProgressReporter,
-  );
-    vscode.commands.registerCommand(RUN_LAUNCH_PREFLIGHT_COMMAND, async () => {
-      await runStandaloneLaunchPreflight()
-    }),
     vscode.commands.registerCommand(DIAGNOSE_SOURCE_MAP_COMMAND, async () => {
       await runDiagnoseSourceMapCommand()
     }),
-    factory
+    factory,
+    launchProgressReporter
   )
 }
 
 export function deactivate(): void {
-  launchProgressReporter?.dispose();
+  launchProgressReporter?.dispose()
   if (logManager) {
     logManager.dispose()
   }

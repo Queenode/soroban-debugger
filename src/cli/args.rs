@@ -1,4 +1,3 @@
-
 use crate::config::Config;
 use clap::{Parser, Subcommand, ValueEnum};
 
@@ -192,6 +191,9 @@ pub enum Commands {
     /// Run a multi-step scenario from a TOML file
     Scenario(ScenarioArgs),
 
+    /// Prune or compact run history according to a retention policy
+    HistoryPrune(HistoryPruneArgs),
+
     /// Plugin-provided subcommand (loaded at runtime)
     #[command(external_subcommand)]
     External(Vec<String>),
@@ -200,7 +202,11 @@ pub enum Commands {
 #[derive(Parser)]
 pub struct RunArgs {
     /// Path to the contract WASM file
-    #[arg(short, long, required_unless_present = "server")]
+    #[arg(
+        short,
+        long,
+        required_unless_present_any = ["server", "remote"]
+    )]
     pub contract: Option<PathBuf>,
 
     /// Deprecated: use --contract instead
@@ -208,7 +214,11 @@ pub struct RunArgs {
     pub wasm: Option<PathBuf>,
 
     /// Function name to execute
-    #[arg(short, long, required_unless_present = "server")]
+    #[arg(
+        short,
+        long,
+        required_unless_present_any = ["server", "remote"]
+    )]
     pub function: Option<String>,
 
     /// Function arguments as JSON array (e.g., '["arg1", "arg2"]')
@@ -518,6 +528,22 @@ pub struct CompletionsArgs {
     #[arg(value_enum)]
     pub shell: Shell,
 }
+
+#[derive(Parser)]
+pub struct HistoryPruneArgs {
+    /// Keep only the N most-recent records
+    #[arg(long, value_name = "COUNT")]
+    pub max_records: Option<usize>,
+
+    /// Drop records older than N days
+    #[arg(long, value_name = "DAYS")]
+    pub max_age_days: Option<u64>,
+
+    /// Print what would be removed without actually deleting anything
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
 #[derive(Parser)]
 pub struct InspectArgs {
     /// Path to the contract WASM file
@@ -931,6 +957,11 @@ pub struct SymbolicArgs {
     #[arg(long, value_name = "N")]
     pub path_cap: Option<usize>,
 
+    /// Legacy alias for controlling generated-value branching width.
+    /// Preserved for backward-compatible CLI parsing.
+    #[arg(long, value_name = "N")]
+    pub max_breadth: Option<usize>,
+
     /// Maximum time for symbolic analysis, in seconds.
     /// When omitted, the budget is controlled by --profile.
     /// The command exits with a non-zero status code if this limit is exceeded.
@@ -1048,6 +1079,18 @@ pub struct AnalyzeArgs {
     /// Output format (text, json)
     #[arg(long, default_value = "text")]
     pub format: String,
+
+    /// Enable only the specified rule id(s). Repeatable.
+    #[arg(long, value_name = "RULE_ID")]
+    pub enable_rule: Vec<String>,
+
+    /// Disable the specified rule id(s). Repeatable.
+    #[arg(long, value_name = "RULE_ID")]
+    pub disable_rule: Vec<String>,
+
+    /// Minimum severity to include: low, medium, or high.
+    #[arg(long, default_value = "low", value_name = "SEVERITY")]
+    pub min_severity: String,
 }
 
 #[derive(Parser)]

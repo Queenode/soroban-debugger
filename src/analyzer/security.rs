@@ -67,7 +67,6 @@ pub struct SecurityWaiver {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct WaiverFile {
     pub waivers: Vec<SecurityWaiver>,
-
 }
 
 pub trait SecurityRule {
@@ -125,10 +124,10 @@ impl SecurityAnalyzer {
 
     pub fn load_waivers_from_file<P: AsRef<std::path::Path>>(mut self, path: P) -> Result<Self> {
         let content = std::fs::read_to_string(path).map_err(|e| {
-             crate::DebuggerError::FileError(format!("Failed to read waiver file: {}", e))
+            crate::DebuggerError::FileError(format!("Failed to read waiver file: {}", e))
         })?;
         let waiver_file: WaiverFile = toml::from_str(&content).map_err(|e| {
-             crate::DebuggerError::FileError(format!("Failed to parse waiver TOML: {}", e))
+            crate::DebuggerError::FileError(format!("Failed to parse waiver TOML: {}", e))
         })?;
         self.waivers = waiver_file.waivers;
         Ok(self)
@@ -144,8 +143,6 @@ impl SecurityAnalyzer {
         let mut report = SecurityReport::default();
 
         for rule in &self.rules {
-            let name = rule.name();
-
             let id = rule.id();
 
             if !filter.enable_rules.is_empty() && !filter.enable_rules.iter().any(|r| r == id) {
@@ -160,7 +157,7 @@ impl SecurityAnalyzer {
                 .into_iter()
                 .filter(|f| f.severity >= filter.min_severity)
                 .collect();
-            
+
             if !filtered_static.is_empty() {
                 report.rules.insert(id.to_string(), rule.metadata());
                 report.findings.extend(filtered_static);
@@ -172,7 +169,7 @@ impl SecurityAnalyzer {
                     .into_iter()
                     .filter(|f| f.severity >= filter.min_severity)
                     .collect();
-                
+
                 if !filtered_dynamic.is_empty() {
                     report.rules.insert(id.to_string(), rule.metadata());
                     report.findings.extend(filtered_dynamic);
@@ -185,7 +182,11 @@ impl SecurityAnalyzer {
     }
 
     fn apply_waivers(&self, report: &mut SecurityReport) {
-        let waiver_set: HashSet<&str> = self.waivers.iter().map(|w| w.fingerprint.as_str()).collect();
+        let waiver_set: HashSet<&str> = self
+            .waivers
+            .iter()
+            .map(|w| w.fingerprint.as_str())
+            .collect();
         let mut suppressed_count = 0;
 
         for finding in &mut report.findings {
@@ -438,7 +439,6 @@ impl SecurityRule for ArithmeticCheckRule {
     }
 }
 
-
 /// Guard classification for arithmetic overflow findings.
 #[derive(Debug)]
 enum GuardKind {
@@ -532,7 +532,10 @@ impl SecurityRule for AuthorizationCheckRule {
         trace: &[DynamicTraceEvent],
     ) -> Result<Vec<SecurityFinding>> {
         let mut findings = Vec::new();
-        let mut auth_actors_per_frame: std::collections::HashMap<FrameKey, std::collections::HashMap<String, usize>> = std::collections::HashMap::new();
+        let mut auth_actors_per_frame: std::collections::HashMap<
+            FrameKey,
+            std::collections::HashMap<String, usize>,
+        > = std::collections::HashMap::new();
 
         // First pass: find authorized actors per frame
         for entry in trace {
@@ -541,7 +544,9 @@ impl SecurityRule for AuthorizationCheckRule {
                     let actors = auth_actors_per_frame.entry(frame).or_default();
                     let addr = entry.address.clone().or_else(|| {
                         // Legacy fallback
-                        entry.message.split_whitespace()
+                        entry
+                            .message
+                            .split_whitespace()
                             .find(|w| (w.starts_with('G') || w.starts_with('C')) && w.len() == 56)
                             .map(|s| s.to_string())
                     });
@@ -558,7 +563,11 @@ impl SecurityRule for AuthorizationCheckRule {
             if entry.kind == DynamicTraceEventKind::StorageWrite {
                 if let Some(frame) = frame_key_for(entry) {
                     if let Some(authorized_actors) = auth_actors_per_frame.get(&frame) {
-                        let earliest_auth = authorized_actors.values().min().cloned().unwrap_or(usize::MAX);
+                        let earliest_auth = authorized_actors
+                            .values()
+                            .min()
+                            .cloned()
+                            .unwrap_or(usize::MAX);
                         if entry.sequence < earliest_auth {
                             problematic_writes.push((entry.clone(), format!("Storage mutation detected before any authorization in frame '{}'.", frame.function.as_deref().unwrap_or("unknown"))));
                         } else if let Some(key) = &entry.storage_key {
@@ -583,25 +592,12 @@ impl SecurityRule for AuthorizationCheckRule {
 
         // If we have storage writes without preceding auth in the same scope, report a finding
         if !problematic_writes.is_empty() {
-            let details: Vec<String> = problematic_writes
-                .iter()
-                .take(3)
-                .map(|(e, _)| {
-                    format!(
-                        "Seq {}: Write in {} at depth {}",
-                        e.sequence,
-                        e.function.as_deref().unwrap_or("unknown"),
-                        e.call_depth.unwrap_or(0)
-                    )
-                })
-                .collect();
-
             let description = if problematic_writes.is_empty() {
-                "Storage mutation detected without preceding authorization in the same call frame.".to_string()
+                "Storage mutation detected without preceding authorization in the same call frame."
+                    .to_string()
             } else {
                 problematic_writes[0].1.clone()
             };
-
 
             findings.push(SecurityFinding {
                 rule_id: self.id().to_string(),
@@ -724,7 +720,6 @@ impl SecurityRule for CrossContractImportRule {
             rationale: None,
             fingerprint: format!("{}:{}", self.id(), matches.join(",")),
             suppressed: false,
-
         }])
     }
 }
@@ -1090,7 +1085,6 @@ fn is_storage_write_import(module: &str, name: &str) -> bool {
 
     false
 }
-
 
 fn analyze_unbounded_iteration_dynamic(trace: &[DynamicTraceEvent]) -> Option<SecurityFinding> {
     let mut read_key_counts: HashMap<&str, usize> = HashMap::new();
@@ -1490,17 +1484,11 @@ fn analyze_reentrancy_pattern_dynamic(trace: &[DynamicTraceEvent]) -> Vec<Securi
     findings
 }
 
-fn analyze_reentrancy_dynamic(trace: &[DynamicTraceEvent]) -> Vec<SecurityFinding> {
-    analyze_reentrancy_pattern_dynamic(trace)
-}
-
 fn frame_key_for(entry: &DynamicTraceEvent) -> Option<FrameKey> {
-    if entry.function.is_none() {
-        return None;
-    }
+    let function = entry.function.clone()?;
 
     Some(FrameKey {
-        function: entry.function.clone(),
+        function: Some(function),
         call_depth: entry.call_depth,
     })
 }
@@ -2131,7 +2119,7 @@ mod tests {
     #[test]
     fn auth_rule_detects_storage_before_auth() {
         let rule = AuthorizationCheckRule;
-        
+
         let trace = vec![
             DynamicTraceEvent {
                 sequence: 0,
@@ -2160,13 +2148,15 @@ mod tests {
         let findings = rule.analyze_dynamic(None, &trace).unwrap();
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].rule_id, "missing-auth");
-        assert!(findings[0].description.contains("before any authorization in frame 'test_function'"));
+        assert!(findings[0]
+            .description
+            .contains("before any authorization in frame 'test_function'"));
     }
 
     #[test]
     fn auth_rule_allows_storage_after_auth() {
         let rule = AuthorizationCheckRule;
-        
+
         let trace = vec![
             DynamicTraceEvent {
                 sequence: 0,
@@ -2199,7 +2189,7 @@ mod tests {
     #[test]
     fn auth_rule_detects_multiple_storage_before_auth() {
         let rule = AuthorizationCheckRule;
-        
+
         let trace = vec![
             DynamicTraceEvent {
                 sequence: 0,
@@ -2239,13 +2229,15 @@ mod tests {
         let findings = rule.analyze_dynamic(None, &trace).unwrap();
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].rule_id, "missing-auth");
-        assert!(findings[0].description.contains("before any authorization in frame 'test_function'"));
+        assert!(findings[0]
+            .description
+            .contains("before any authorization in frame 'test_function'"));
     }
 
     #[test]
     fn auth_rule_detects_storage_without_any_auth() {
         let rule = AuthorizationCheckRule;
-        
+
         let trace = vec![
             DynamicTraceEvent {
                 sequence: 0,
@@ -2274,7 +2266,9 @@ mod tests {
         let findings = rule.analyze_dynamic(None, &trace).unwrap();
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].rule_id, "missing-auth");
-        assert!(findings[0].description.contains("without any preceding authorization in frame 'test_function'"));
+        assert!(findings[0]
+            .description
+            .contains("without any preceding authorization in frame 'test_function'"));
     }
 
     #[test]
@@ -2310,13 +2304,15 @@ mod tests {
         let findings = rule.analyze_dynamic(None, &trace).unwrap();
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].rule_id, "missing-auth");
-        assert!(findings[0].description.contains("without any preceding authorization in frame 'main_function'"));
+        assert!(findings[0]
+            .description
+            .contains("without any preceding authorization in frame 'main_function'"));
     }
 
     #[test]
     fn auth_rule_detects_actor_mismatch() {
         let rule = AuthorizationCheckRule;
-        
+
         let trace = vec![
             DynamicTraceEvent {
                 sequence: 0,
@@ -2324,7 +2320,9 @@ mod tests {
                 message: "authorized G_ALICE".to_string(),
                 function: Some("test_function".to_string()),
                 call_depth: Some(0),
-                address: Some("G_ALICE_ADDRESS_1234567890123456789012345678901234567890123456".to_string()),
+                address: Some(
+                    "G_ALICE_ADDRESS_1234567890123456789012345678901234567890123456".to_string(),
+                ),
                 storage_key: None,
                 storage_value: None,
                 caller: None,
@@ -2334,7 +2332,9 @@ mod tests {
                 kind: DynamicTraceEventKind::StorageWrite,
                 message: "write G_BOB data".to_string(),
                 function: Some("test_function".to_string()),
-                storage_key: Some("data:G_BOB_ADDRESS_1234567890123456789012345678901234567890123456".to_string()),
+                storage_key: Some(
+                    "data:G_BOB_ADDRESS_1234567890123456789012345678901234567890123456".to_string(),
+                ),
                 storage_value: Some("value".to_string()),
                 call_depth: Some(0),
                 address: None,
@@ -2344,7 +2344,9 @@ mod tests {
 
         let findings = rule.analyze_dynamic(None, &trace).unwrap();
         assert_eq!(findings.len(), 1);
-        assert!(findings[0].description.contains("without authorization for a relevant actor"));
+        assert!(findings[0]
+            .description
+            .contains("without authorization for a relevant actor"));
         assert!(findings[0].description.contains("G_ALICE_ADDRESS"));
     }
 }

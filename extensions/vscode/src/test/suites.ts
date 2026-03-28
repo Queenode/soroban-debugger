@@ -68,6 +68,16 @@ async function startMockDebuggerServer(options: {
         };
 
         switch (message.request.type) {
+          case "Handshake":
+            respond({
+              type: "HandshakeAck",
+              server_name: "mock-soroban-debug",
+              server_version: "0.1.0",
+              protocol_min: 1,
+              protocol_max: 1,
+              selected_version: 1,
+            });
+            break;
           case 'Authenticate':
             respond({ type: 'Authenticated', success: true, message: 'ok' });
             break;
@@ -318,7 +328,10 @@ export async function runSmokeSuite(): Promise<void> {
     await debuggerProcess.ping();
 
     const timedOut = debuggerProcess.evaluate('2', undefined, { timeoutMs: 20 });
-    await assert.rejects(timedOut, (error: any) => error?.name === 'TimeoutError');
+    await assert.rejects(
+      timedOut,
+      (error: any) => error instanceof DebuggerTimeoutError,
+    );
 
     await wait(250);
     assert.equal(
@@ -449,10 +462,15 @@ export async function runSmokeSuite(): Promise<void> {
   );
   assert.equal(
     resolvedBreakpoints[0].verified,
-    true,
-    "Expected echo breakpoint to resolve",
+    false,
+    "Expected heuristic source mapping to be unverified",
   );
   assert.equal(resolvedBreakpoints[0].functionName, "echo");
+  assert.equal(
+    resolvedBreakpoints[0].setBreakpoint,
+    true,
+    "Expected heuristic mapping to still set a function breakpoint",
+  );
 
   await debuggerProcess.setBreakpoint({
     id: "echo",
@@ -651,8 +669,8 @@ async function runDapHappyPathE2E(
     );
     assert.equal(
       setBps.body?.breakpoints?.[0]?.verified,
-      true,
-      "Expected breakpoint to verify",
+      false,
+      "Expected heuristic source mapping to be unverified",
     );
 
     const configDone = await client.request("configurationDone", {});

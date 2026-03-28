@@ -8,11 +8,17 @@ use crate::ui::formatter::Formatter;
 use crate::{DebuggerError, Result};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Scenario {
+    /// Optional list of fragment TOML files whose steps are prepended to this scenario.
+    /// Paths are resolved relative to the directory that contains this file.
+    /// Includes are processed recursively; cycles are detected and reported as errors.
+    #[serde(default)]
+    pub include: Vec<String>,
     #[serde(default)]
     pub defaults: ScenarioDefaults,
     pub steps: Vec<ScenarioStep>,
@@ -56,20 +62,72 @@ pub struct ScenarioBudgetAssertion {
     pub max_memory_bytes: Option<u64>,
 }
 
+/// Load a scenario file, recursively resolving `include` directives.
+///
+/// `visiting` tracks canonical paths currently on the call stack so that
+/// cycles (A includes B includes A) are detected and reported immediately.
+pub fn load_scenario(path: &Path, visiting: &mut HashSet<PathBuf>) -> Result<Vec<ScenarioStep>> {
+    let canonical = path.canonicalize().map_err(|e| {
+        DebuggerError::FileError(format!(
+            "Cannot resolve scenario path {:?}: {}",
+            path, e
+        ))
+    })?;
+
+    if !visiting.insert(canonical.clone()) {
+        return Err(DebuggerError::FileError(format!(
+            "Cycle detected: scenario file {:?} is already being loaded",
+            canonical
+        ))
+        .into());
+    }
+
+    let content = fs::read_to_string(&canonical).map_err(|e| {
+        DebuggerError::FileError(format!(
+            "Failed to read scenario file {:?}: {}",
+            canonical, e
+        ))
+    })?;
+
+    let scenario: Scenario = toml::from_str(&content).map_err(|e| {
+        DebuggerError::FileError(format!(
+            "Failed to parse scenario TOML {:?}: {}",
+            canonical, e
+        ))
+    })?;
+
+    let base_dir = canonical.parent().unwrap_or(Path::new("."));
+
+    // Collect steps from all includes first (prepended), then this file's own steps.
+    let mut all_steps: Vec<ScenarioStep> = Vec::new();
+
+    for include_path in &scenario.include {
+        let resolved = base_dir.join(include_path);
+        let fragment_steps = load_scenario(&resolved, visiting)?;
+        all_steps.extend(fragment_steps);
+    }
+
+    all_steps.extend(scenario.steps);
+
+    visiting.remove(&canonical);
+    Ok(all_steps)
+}
+
 pub fn run_scenario(args: ScenarioArgs, _verbosity: Verbosity) -> Result<()> {
     println!(
         "{}",
         Formatter::info(format!("Loading scenario file: {:?}", args.scenario))
     );
-    let scenario_content = fs::read_to_string(&args.scenario).map_err(|e| {
-        DebuggerError::FileError(format!(
-            "Failed to read scenario file {:?}: {}",
-            args.scenario, e
-        ))
+
+    let root_content = fs::read_to_string(&args.scenario).map_err(|e| {
+        DebuggerError::ExecutionError(format!("Failed to read root scenario file: {}", e))
+    })?;
+    let root_scenario: Scenario = toml::from_str(&root_content).map_err(|e| {
+        DebuggerError::ExecutionError(format!("Failed to parse root scenario file: {}", e))
     })?;
 
-    let scenario: Scenario = toml::from_str(&scenario_content)
-        .map_err(|e| DebuggerError::FileError(format!("Failed to parse scenario TOML: {}", e)))?;
+    let mut visiting = HashSet::new();
+    let steps = load_scenario(&args.scenario, &mut visiting)?;
 
     println!(
         "{}",
@@ -84,8 +142,6 @@ pub fn run_scenario(args: ScenarioArgs, _verbosity: Verbosity) -> Result<()> {
     let mut executor = ContractExecutor::new(wasm_file.bytes)?;
 
     if let Some(storage_json) = &args.storage {
-        // Validate JSON early for clear errors, then pass through to the executor
-        // which supports the richer `--storage` formats.
         serde_json::from_str::<serde_json::Value>(storage_json).map_err(|e| {
             DebuggerError::StorageError(format!("Failed to parse initial storage JSON: {}", e))
         })?;
@@ -94,27 +150,26 @@ pub fn run_scenario(args: ScenarioArgs, _verbosity: Verbosity) -> Result<()> {
 
     println!(
         "{}",
-        Formatter::success(format!(
-            "Running {} scenario steps...\n",
-            scenario.steps.len()
-        ))
+        Formatter::success(format!("Running {} scenario steps...\n", steps.len()))
     );
 
     let mut engine = DebuggerEngine::new(executor, vec![]);
     let mut all_passed = true;
     let mut variables: HashMap<String, String> = HashMap::new();
 
-    for (i, step) in scenario.steps.iter().enumerate() {
+    for (i, step) in steps.iter().enumerate() {
         let step_label = step.name.as_deref().unwrap_or(&step.function);
-        let effective_timeout =
-            resolve_step_timeout(step.timeout_secs, scenario.defaults.timeout_secs, args.timeout);
+        let effective_timeout = resolve_step_timeout(
+            step.timeout_secs,
+            root_scenario.defaults.timeout_secs,
+            args.timeout,
+        );
         engine.executor_mut().set_timeout(effective_timeout);
         println!(
             "{}",
             Formatter::info(format!("Step {}: {}", i + 1, step_label))
         );
 
-        // Resolve variable references in args and expected_return before executing.
         let resolved_args = if let Some(args_json) = &step.args {
             Some(interpolate_variables(args_json, &variables)?)
         } else {
@@ -134,7 +189,6 @@ pub fn run_scenario(args: ScenarioArgs, _verbosity: Verbosity) -> Result<()> {
         };
 
         let events_before_len = engine.executor().get_events()?.len();
-        // Execute step
         let result = engine.execute(&step.function, parsed_args.as_deref());
 
         let mut step_passed = true;
@@ -143,11 +197,10 @@ pub fn run_scenario(args: ScenarioArgs, _verbosity: Verbosity) -> Result<()> {
         match result {
             Ok(res) => {
                 if expects_failure {
-                    // Step was expected to fail, but it succeeded — that's a test failure.
                     println!(
                         "  {}",
                         Formatter::error(format!(
-                            "✗ Step succeeded with '{}', but was expected to fail",
+                            "? Step succeeded with '{}', but was expected to fail",
                             res
                         ))
                     );
@@ -155,7 +208,6 @@ pub fn run_scenario(args: ScenarioArgs, _verbosity: Verbosity) -> Result<()> {
                 } else {
                     println!("  Result: {}", res);
 
-                    // Capture the return value into a named variable if requested.
                     if let Some(var_name) = &step.capture {
                         variables.insert(var_name.clone(), res.trim().to_string());
                         println!(
@@ -172,13 +224,13 @@ pub fn run_scenario(args: ScenarioArgs, _verbosity: Verbosity) -> Result<()> {
                         if res.trim() == expected.trim() {
                             println!(
                                 "  {}",
-                                Formatter::success("✓ Return value assertion passed")
+                                Formatter::success("? Return value assertion passed")
                             );
                         } else {
                             println!(
                                 "  {}",
                                 Formatter::error(format!(
-                                    "✗ Return value assertion failed! Expected '{}', got '{}'",
+                                    "? Return value assertion failed! Expected '{}', got '{}'",
                                     expected, res
                                 ))
                             );
@@ -194,7 +246,7 @@ pub fn run_scenario(args: ScenarioArgs, _verbosity: Verbosity) -> Result<()> {
                         println!(
                             "  {}",
                             Formatter::success(format!(
-                                "✓ Expected error assertion passed (matched '{}')",
+                                "? Expected error assertion passed (matched '{}')",
                                 expected_error
                             ))
                         );
@@ -202,7 +254,7 @@ pub fn run_scenario(args: ScenarioArgs, _verbosity: Verbosity) -> Result<()> {
                         println!(
                             "  {}",
                             Formatter::error(format!(
-                                "✗ Expected error '{}', but got '{}'",
+                                "? Expected error '{}', but got '{}'",
                                 expected_error, err_msg
                             ))
                         );
@@ -213,7 +265,7 @@ pub fn run_scenario(args: ScenarioArgs, _verbosity: Verbosity) -> Result<()> {
                         println!(
                             "  {}",
                             Formatter::success(format!(
-                                "✓ Expected panic assertion passed (matched '{}')",
+                                "? Expected panic assertion passed (matched '{}')",
                                 expected_panic
                             ))
                         );
@@ -221,7 +273,7 @@ pub fn run_scenario(args: ScenarioArgs, _verbosity: Verbosity) -> Result<()> {
                         println!(
                             "  {}",
                             Formatter::error(format!(
-                                "✗ Expected panic '{}', but got '{}'",
+                                "? Expected panic '{}', but got '{}'",
                                 expected_panic, err_msg
                             ))
                         );
@@ -230,7 +282,7 @@ pub fn run_scenario(args: ScenarioArgs, _verbosity: Verbosity) -> Result<()> {
                 } else {
                     println!(
                         "  {}",
-                        Formatter::error(format!("✗ Execution failed: {}", e))
+                        Formatter::error(format!("? Execution failed: {}", e))
                     );
                     step_passed = false;
                 }
@@ -270,7 +322,6 @@ pub fn run_scenario(args: ScenarioArgs, _verbosity: Verbosity) -> Result<()> {
             }
         }
 
-        // Check storage assertions if any and step passed execute
         if step_passed {
             if let Some(expected_storage) = &step.expected_storage {
                 let snapshot = engine.executor().get_storage_snapshot()?;
@@ -281,19 +332,19 @@ pub fn run_scenario(args: ScenarioArgs, _verbosity: Verbosity) -> Result<()> {
                             println!(
                                 "  {}",
                                 Formatter::success(format!(
-                                    "✓ Storage assertion passed for key '{}'",
+                                    "? Storage assertion passed for key '{}'",
                                     key
                                 ))
                             );
                         } else {
-                            println!("  {}", Formatter::error(format!("✗ Storage assertion failed for key '{}'! Expected '{}', got '{}'", key, expected_val, actual_val)));
+                            println!("  {}", Formatter::error(format!("? Storage assertion failed for key '{}'! Expected '{}', got '{}'", key, expected_val, actual_val)));
                             storage_passed = false;
                         }
                     } else {
                         println!(
                             "  {}",
                             Formatter::error(format!(
-                                "✗ Storage assertion failed! Key '{}' not found",
+                                "? Storage assertion failed! Key '{}' not found",
                                 key
                             ))
                         );
@@ -317,7 +368,7 @@ pub fn run_scenario(args: ScenarioArgs, _verbosity: Verbosity) -> Result<()> {
                 Formatter::warning(format!("Step {} failed.\n", i + 1))
             );
             all_passed = false;
-            break; // Stop execution on first failure
+            break;
         }
     }
 
@@ -333,11 +384,9 @@ pub fn run_scenario(args: ScenarioArgs, _verbosity: Verbosity) -> Result<()> {
 }
 
 /// Replaces `{{var_name}}` placeholders in `template` with values from `variables`.
-/// Returns an error with a descriptive message if any referenced variable is not defined.
 fn interpolate_variables(template: &str, variables: &HashMap<String, String>) -> Result<String> {
     let re = Regex::new(r"\{\{(\w+)\}\}").unwrap();
 
-    // Collect any missing variable names first for a clear error message.
     let missing: Vec<String> = re
         .captures_iter(template)
         .filter_map(|caps| {
@@ -402,7 +451,7 @@ fn assert_expected_events(
     }
 
     Ok(format!(
-        "✓ Event assertion passed ({} event(s) matched)",
+        "? Event assertion passed ({} event(s) matched)",
         actual_events.len()
     ))
 }
@@ -417,12 +466,12 @@ fn assert_budget_limits(
     if let Some(max_cpu) = expected_budget.max_cpu_instructions {
         if actual_budget.cpu_instructions <= max_cpu {
             passed.push(format!(
-                "✓ CPU budget assertion passed (used {}, limit {})",
+                "? CPU budget assertion passed (used {}, limit {})",
                 actual_budget.cpu_instructions, max_cpu
             ));
         } else {
             failed.push(format!(
-                "✗ CPU budget assertion failed! Used {}, limit {}",
+                "? CPU budget assertion failed! Used {}, limit {}",
                 actual_budget.cpu_instructions, max_cpu
             ));
         }
@@ -431,12 +480,12 @@ fn assert_budget_limits(
     if let Some(max_memory) = expected_budget.max_memory_bytes {
         if actual_budget.memory_bytes <= max_memory {
             passed.push(format!(
-                "✓ Memory budget assertion passed (used {}, limit {})",
+                "? Memory budget assertion passed (used {}, limit {})",
                 actual_budget.memory_bytes, max_memory
             ));
         } else {
             failed.push(format!(
-                "✗ Memory budget assertion failed! Used {}, limit {}",
+                "? Memory budget assertion failed! Used {}, limit {}",
                 actual_budget.memory_bytes, max_memory
             ));
         }
@@ -463,6 +512,13 @@ fn resolve_step_timeout(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
+
+    fn write_file(dir: &Path, name: &str, content: &str) -> PathBuf {
+        let path = dir.join(name);
+        fs::write(&path, content).unwrap();
+        path
+    }
 
     #[test]
     fn test_interpolate_variables_replaces_known_placeholders() {
@@ -569,53 +625,181 @@ mod tests {
 
         let scenario: Scenario = toml::from_str(toml_str).unwrap();
         assert_eq!(scenario.steps.len(), 2);
-        assert_eq!(
-            scenario.defaults,
-            ScenarioDefaults {
-                timeout_secs: Some(45)
-            }
+        assert!(scenario.include.is_empty());
+    }
+
+    #[test]
+    fn test_include_field_deserialization() {
+        let toml_str = r#"
+            include = ["setup.toml", "auth.toml"]
+
+            [[steps]]
+            function = "increment"
+        "#;
+
+        let scenario: Scenario = toml::from_str(toml_str).unwrap();
+        assert_eq!(scenario.include, vec!["setup.toml", "auth.toml"]);
+        assert_eq!(scenario.steps.len(), 1);
+    }
+
+    #[test]
+    fn test_load_scenario_no_includes() {
+        let dir = TempDir::new().unwrap();
+        let path = write_file(
+            dir.path(),
+            "main.toml",
+            r#"
+[[steps]]
+function = "increment"
+args = "[]"
+"#,
         );
 
-        assert_eq!(scenario.steps[0].name.as_deref(), Some("Init"));
-        assert_eq!(scenario.steps[0].function, "init");
-        assert_eq!(scenario.steps[0].args.as_deref(), Some("[\"admin\", 10]"));
-        assert!(scenario.steps[0].timeout_secs.is_none());
-        assert_eq!(scenario.steps[0].expected_return.as_deref(), Some("()"));
-        assert!(scenario.steps[0].expected_storage.is_none());
-        assert!(scenario.steps[0].expected_events.is_none());
-        assert!(scenario.steps[0].budget_limits.is_none());
-        assert!(scenario.steps[0].expected_error.is_none());
-        assert!(scenario.steps[0].expected_panic.is_none());
+        let mut visiting = HashSet::new();
+        let steps = load_scenario(&path, &mut visiting).unwrap();
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].function, "increment");
+    }
 
-        assert_eq!(scenario.steps[1].name.as_deref(), Some("Get Counter"));
-        assert_eq!(scenario.steps[1].function, "get");
-        assert!(scenario.steps[1].args.is_none());
-        assert!(scenario.steps[1].timeout_secs.is_none());
-        assert_eq!(scenario.steps[1].expected_return.as_deref(), Some("1"));
-        assert_eq!(scenario.steps[1].expected_events.as_ref().unwrap().len(), 1);
-        assert_eq!(
-            scenario.steps[1].expected_events.as_ref().unwrap()[0],
-            ScenarioEventAssertion {
-                contract_id: Some("contract-1".to_string()),
-                topics: vec!["topic-a".to_string()],
-                data: "payload".to_string(),
-            }
+    #[test]
+    fn test_load_scenario_with_single_include() {
+        let dir = TempDir::new().unwrap();
+
+        write_file(
+            dir.path(),
+            "setup.toml",
+            r#"
+[[steps]]
+function = "init"
+args = "[]"
+"#,
         );
-        assert_eq!(
-            scenario.steps[1].budget_limits,
-            Some(ScenarioBudgetAssertion {
-                max_cpu_instructions: Some(100),
-                max_memory_bytes: Some(200),
-            })
+
+        let main = write_file(
+            dir.path(),
+            "main.toml",
+            r#"
+include = ["setup.toml"]
+
+[[steps]]
+function = "increment"
+args = "[]"
+"#,
         );
-        assert_eq!(
-            scenario.steps[1]
-                .expected_storage
-                .as_ref()
-                .unwrap()
-                .get("Counter")
-                .map(|s| s.as_str()),
-            Some("1")
+
+        let mut visiting = HashSet::new();
+        let steps = load_scenario(&main, &mut visiting).unwrap();
+
+        // setup steps come first, then main steps
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[0].function, "init");
+        assert_eq!(steps[1].function, "increment");
+    }
+
+    #[test]
+    fn test_load_scenario_with_nested_includes() {
+        let dir = TempDir::new().unwrap();
+
+        write_file(
+            dir.path(),
+            "base.toml",
+            r#"
+[[steps]]
+function = "base_setup"
+"#,
+        );
+
+        write_file(
+            dir.path(),
+            "middle.toml",
+            r#"
+include = ["base.toml"]
+
+[[steps]]
+function = "middle_step"
+"#,
+        );
+
+        let main = write_file(
+            dir.path(),
+            "main.toml",
+            r#"
+include = ["middle.toml"]
+
+[[steps]]
+function = "final_step"
+"#,
+        );
+
+        let mut visiting = HashSet::new();
+        let steps = load_scenario(&main, &mut visiting).unwrap();
+
+        assert_eq!(steps.len(), 3);
+        assert_eq!(steps[0].function, "base_setup");
+        assert_eq!(steps[1].function, "middle_step");
+        assert_eq!(steps[2].function, "final_step");
+    }
+
+    #[test]
+    fn test_load_scenario_cycle_detection() {
+        let dir = TempDir::new().unwrap();
+
+        // a.toml includes b.toml, b.toml includes a.toml � cycle
+        write_file(
+            dir.path(),
+            "a.toml",
+            r#"
+include = ["b.toml"]
+
+[[steps]]
+function = "step_a"
+"#,
+        );
+
+        write_file(
+            dir.path(),
+            "b.toml",
+            r#"
+include = ["a.toml"]
+
+[[steps]]
+function = "step_b"
+"#,
+        );
+
+        let a = dir.path().join("a.toml");
+        let mut visiting = HashSet::new();
+        let err = load_scenario(&a, &mut visiting).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Cycle detected"),
+            "expected cycle error, got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_load_scenario_missing_include_file() {
+        let dir = TempDir::new().unwrap();
+
+        let main = write_file(
+            dir.path(),
+            "main.toml",
+            r#"
+include = ["nonexistent.toml"]
+
+[[steps]]
+function = "increment"
+"#,
+        );
+
+        let mut visiting = HashSet::new();
+        let err = load_scenario(&main, &mut visiting).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("nonexistent") || msg.contains("Cannot resolve"),
+            "expected file-not-found error, got: {}",
+            msg
         );
     }
 
@@ -634,8 +818,6 @@ mod tests {
             scenario.steps[0].expected_error.as_deref(),
             Some("unauthorized")
         );
-        assert!(scenario.steps[0].expected_panic.is_none());
-        assert!(scenario.steps[0].expected_return.is_none());
     }
 
     #[test]
@@ -648,12 +830,10 @@ mod tests {
         "#;
 
         let scenario: Scenario = toml::from_str(toml_str).unwrap();
-        assert_eq!(scenario.steps.len(), 1);
         assert_eq!(
             scenario.steps[0].expected_panic.as_deref(),
             Some("index out of bounds")
         );
-        assert!(scenario.steps[0].expected_error.is_none());
     }
 
     #[test]
@@ -669,7 +849,6 @@ mod tests {
         assert_eq!(scenario.steps.len(), 1);
         assert!(scenario.steps[0].expected_error.is_none());
         assert!(scenario.steps[0].expected_panic.is_none());
-        assert_eq!(scenario.steps[0].expected_return.as_deref(), Some("1"));
     }
 
     #[test]

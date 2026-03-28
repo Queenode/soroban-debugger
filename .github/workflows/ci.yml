@@ -76,11 +76,11 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
+          cache-dependency-path: extensions/vscode/package-lock.json
       # Using our new Makefile target here
       - name: Build and Test Extension
         run: make test-vscode
-          cache: npm
-          cache-dependency-path: extensions/vscode/package-lock.json
 
       - name: Install extension dependencies
         run: npm --prefix extensions/vscode ci

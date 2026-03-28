@@ -2,8 +2,8 @@ use crate::analyzer::symbolic::SymbolicConfig;
 use crate::analyzer::upgrade::{CompatibilityReport, ExecutionDiff, UpgradeAnalyzer};
 use crate::analyzer::{security::SecurityAnalyzer, symbolic::SymbolicAnalyzer};
 use crate::cli::args::{
-    AnalyzeArgs, CompareArgs, InspectArgs, InteractiveArgs, OptimizeArgs, OutputFormat,
-    ProfileArgs, RemoteArgs, ReplArgs, ReplayArgs, RunArgs, ScenarioArgs, ServerArgs,
+    AnalyzeArgs, CompareArgs, HistoryPruneArgs, InspectArgs, InteractiveArgs, OptimizeArgs,
+    OutputFormat, ProfileArgs, RemoteArgs, ReplArgs, ReplayArgs, RunArgs, ScenarioArgs, ServerArgs,
     SymbolicArgs, SymbolicProfile, TuiArgs, UpgradeCheckArgs, Verbosity,
 };
 use crate::debugger::engine::DebuggerEngine;
@@ -90,6 +90,14 @@ fn render_symbolic_report(report: &crate::analyzer::symbolic::SymbolicReport) ->
         format!("Paths explored: {}", report.paths_explored),
         format!("Panics found: {}", report.panics_found),
         format!(
+            "Replay token: {}",
+            report
+                .metadata
+                .seed
+                .map(|seed| seed.to_string())
+                .unwrap_or_else(|| "none".to_string())
+        ),
+        format!(
             "Budget: path_cap={}, input_combination_cap={}, timeout={}s",
             report.metadata.config.max_paths,
             report.metadata.config.max_input_combinations,
@@ -101,7 +109,18 @@ fn render_symbolic_report(report: &crate::analyzer::symbolic::SymbolicReport) ->
             report.metadata.attempted_input_combinations,
             report.metadata.distinct_paths_recorded
         ),
+        format!(
+            "Coverage: {:.1}% (explored branch/function coverage)",
+            report.metadata.coverage_fraction * 100.0
+        ),
     ];
+
+    if !report.metadata.uncovered_regions.is_empty() {
+        lines.push(format!(
+            "Uncovered regions: {}",
+            report.metadata.uncovered_regions.join(", ")
+        ));
+    }
 
     if report.metadata.truncation_reasons.is_empty() {
         lines.push("Truncation: none".to_string());
@@ -145,7 +164,7 @@ fn symbolic_profile_config(profile: SymbolicProfile) -> SymbolicConfig {
     }
 }
 
-fn symbolic_config_from_args(args: &SymbolicArgs) -> SymbolicConfig {
+fn symbolic_config_from_args(args: &SymbolicArgs) -> Result<SymbolicConfig> {
     let mut config = symbolic_profile_config(args.profile);
     if let Some(path_cap) = args.path_cap {
         config.max_paths = path_cap;
@@ -153,10 +172,36 @@ fn symbolic_config_from_args(args: &SymbolicArgs) -> SymbolicConfig {
     if let Some(input_cap) = args.input_combination_cap {
         config.max_input_combinations = input_cap;
     }
+    if let Some(max_breadth) = args.max_breadth {
+        config.max_breadth = max_breadth;
+    }
     if let Some(timeout) = args.timeout {
         config.timeout_secs = timeout;
     }
-    config
+    config.seed = args.seed.or(args.replay);
+    if let Some(storage_seed_path) = &args.storage_seed {
+        config.storage_seed = Some(fs::read_to_string(storage_seed_path).map_err(|e| {
+            DebuggerError::FileError(format!(
+                "Failed to read storage seed file {:?}: {}",
+                storage_seed_path, e
+            ))
+        })?);
+    }
+
+    Ok(config)
+}
+
+fn parse_min_severity(value: &str) -> Result<crate::analyzer::security::Severity> {
+    match value.to_ascii_lowercase().as_str() {
+        "low" => Ok(crate::analyzer::security::Severity::Low),
+        "medium" | "med" => Ok(crate::analyzer::security::Severity::Medium),
+        "high" => Ok(crate::analyzer::security::Severity::High),
+        other => Err(DebuggerError::InvalidArguments(format!(
+            "Unsupported --min-severity '{}'. Use low, medium, or high.",
+            other
+        ))
+        .into()),
+    }
 }
 
 fn render_security_report(output: &AnalyzeCommandOutput) -> String {
@@ -477,6 +522,20 @@ pub fn run(args: RunArgs, verbosity: Verbosity) -> Result<()> {
         });
     }
 
+    // Remote execution/ping path.
+    if let Some(remote_addr) = &args.remote {
+        return remote(
+            RemoteArgs {
+                remote: remote_addr.clone(),
+                token: args.token.clone(),
+                contract: args.contract.clone(),
+                function: args.function.clone(),
+                args: args.args.clone(),
+            },
+            verbosity,
+        );
+    }
+
     // Initialize output writer
     let mut output_writer = OutputWriter::new(args.save_output.as_deref(), args.append)?;
 
@@ -509,10 +568,10 @@ pub fn run(args: RunArgs, verbosity: Verbosity) -> Result<()> {
 
     if let Some(expected) = &args.expected_hash {
         if expected.to_lowercase() != wasm_hash {
-            return Err((crate::DebuggerError::ChecksumMismatch {
-                expected: expected.clone(),
-                actual: wasm_hash.clone(),
-            })
+            return Err((crate::DebuggerError::ChecksumMismatch(
+                expected.clone(),
+                wasm_hash.clone(),
+            ))
             .into());
         }
     }
@@ -841,8 +900,7 @@ pub fn run(args: RunArgs, verbosity: Verbosity) -> Result<()> {
     }
 
     if args.is_json_output() {
-        let mut output = serde_json::json!({
-            "status": "success",
+        let mut result_obj = serde_json::json!({
             "result": result,
             "sha256": wasm_hash,
             "budget": {
@@ -853,13 +911,13 @@ pub fn run(args: RunArgs, verbosity: Verbosity) -> Result<()> {
         });
 
         if let Some(ref events) = json_events {
-            output["events"] = EventInspector::to_json_value(events);
+            result_obj["events"] = EventInspector::to_json_value(events);
         }
         if let Some(auth_tree) = json_auth {
-            output["auth"] = crate::inspector::auth::AuthInspector::to_json_value(&auth_tree);
+            result_obj["auth"] = crate::inspector::auth::AuthInspector::to_json_value(&auth_tree);
         }
         if !mock_calls.is_empty() {
-            output["mock_calls"] = serde_json::Value::Array(
+            result_obj["mock_calls"] = serde_json::Value::Array(
                 mock_calls
                     .iter()
                     .map(|entry| {
@@ -875,15 +933,34 @@ pub fn run(args: RunArgs, verbosity: Verbosity) -> Result<()> {
             );
         }
         if let Some(ref ledger) = json_ledger {
-            output["ledger_entries"] = ledger.to_json();
+            result_obj["ledger_entries"] = ledger.to_json();
         }
+
+        let output = serde_json::json!({
+            "schema_version": "1.0",
+            "command": "run",
+            "status": "success",
+            "result": result_obj,
+            "sha256": wasm_hash,
+            "budget": {
+                "cpu_instructions": budget.cpu_instructions,
+                "memory_bytes": budget.memory_bytes,
+            },
+            "storage_diff": storage_diff,
+            "error": serde_json::Value::Null
+        });
 
         match serde_json::to_string_pretty(&output) {
             Ok(json) => println!("{}", json),
             Err(e) => {
                 let err_output = serde_json::json!({
+                    "schema_version": "1.0",
+                    "command": "run",
                     "status": "error",
-                    "errors": [format!("Failed to serialize output: {}", e)]
+                    "result": serde_json::Value::Null,
+                    "error": {
+                        "message": format!("Failed to serialize output: {}", e)
+                    }
                 });
                 if let Ok(err_json) = serde_json::to_string_pretty(&err_output) {
                     println!("{}", err_json);
@@ -1026,10 +1103,10 @@ fn run_dry_run(args: &RunArgs) -> Result<()> {
 
     if let Some(expected) = &args.expected_hash {
         if expected.to_lowercase() != wasm_hash {
-            return Err((crate::DebuggerError::ChecksumMismatch {
-                expected: expected.clone(),
-                actual: wasm_hash.clone(),
-            })
+            return Err((crate::DebuggerError::ChecksumMismatch(
+                expected.clone(),
+                wasm_hash.clone(),
+            ))
             .into());
         }
     }
@@ -1125,11 +1202,11 @@ fn display_instruction_counts(counts: &crate::runtime::executor::InstructionCoun
 
 /// Execute the upgrade-check command
 pub fn upgrade_check(args: UpgradeCheckArgs) -> Result<()> {
-    println!("Loading old contract: {:?}", args.old);
+    print_info(format!("Loading old contract: {:?}", args.old));
     let old_wasm = fs::read(&args.old)
         .map_err(|e| miette::miette!("Failed to read old WASM file {:?}: {}", args.old, e))?;
 
-    println!("Loading new contract: {:?}", args.new);
+    print_info(format!("Loading new contract: {:?}", args.new));
     let new_wasm = fs::read(&args.new)
         .map_err(|e| miette::miette!("Failed to read new WASM file {:?}: {}", args.new, e))?;
 
@@ -1147,15 +1224,18 @@ pub fn upgrade_check(args: UpgradeCheckArgs) -> Result<()> {
         UpgradeAnalyzer::analyze(&old_wasm, &new_wasm, &old_path, &new_path, execution_diffs)?;
 
     let output = match args.output.as_str() {
-        "json" => serde_json::to_string_pretty(&report)
-            .map_err(|e| miette::miette!("Failed to serialize report: {}", e))?,
+        "json" => {
+            let envelope = crate::output::VersionedOutput::success("upgrade-check", &report);
+            serde_json::to_string_pretty(&envelope)
+                .map_err(|e| miette::miette!("Failed to serialize report: {}", e))?
+        }
         _ => format_text_report(&report),
     };
 
     if let Some(out_file) = &args.output_file {
         fs::write(out_file, &output)
             .map_err(|e| miette::miette!("Failed to write report to {:?}: {}", out_file, e))?;
-        println!("Report written to {:?}", out_file);
+        print_success(format!("Report written to {:?}", out_file));
     } else {
         println!("{}", output);
     }
@@ -1362,10 +1442,10 @@ pub fn optimize(args: OptimizeArgs, _verbosity: Verbosity) -> Result<()> {
 
     if let Some(expected) = &args.expected_hash {
         if expected.to_lowercase() != wasm_hash {
-            return Err((crate::DebuggerError::ChecksumMismatch {
-                expected: expected.clone(),
-                actual: wasm_hash.clone(),
-            })
+            return Err((crate::DebuggerError::ChecksumMismatch(
+                expected.clone(),
+                wasm_hash.clone(),
+            ))
             .into());
         }
     }
@@ -1477,10 +1557,10 @@ pub fn profile(args: ProfileArgs) -> Result<()> {
 
     if let Some(expected) = &args.expected_hash {
         if expected.to_lowercase() != wasm_hash {
-            return Err((crate::DebuggerError::ChecksumMismatch {
-                expected: expected.clone(),
-                actual: wasm_hash.clone(),
-            })
+            return Err((crate::DebuggerError::ChecksumMismatch(
+                expected.clone(),
+                wasm_hash.clone(),
+            ))
             .into());
         }
     }
@@ -1791,10 +1871,10 @@ pub fn interactive(args: InteractiveArgs, _verbosity: Verbosity) -> Result<()> {
 
     if let Some(expected) = &args.expected_hash {
         if expected.to_lowercase() != wasm_hash {
-            return Err((crate::DebuggerError::ChecksumMismatch {
-                expected: expected.clone(),
-                actual: wasm_hash.clone(),
-            })
+            return Err((crate::DebuggerError::ChecksumMismatch(
+                expected.clone(),
+                wasm_hash.clone(),
+            ))
             .into());
         }
     }
@@ -1911,10 +1991,10 @@ pub fn inspect(args: InspectArgs, _verbosity: Verbosity) -> Result<()> {
         .with_context(|| format!("Failed to read WASM file: {:?}", args.contract))?;
     if let Some(expected) = &args.expected_hash {
         if !wasm_file.sha256_hash.eq_ignore_ascii_case(expected) {
-            return Err(DebuggerError::ChecksumMismatch {
-                expected: expected.clone(),
-                actual: wasm_file.sha256_hash.clone(),
-            }
+            return Err(crate::DebuggerError::ChecksumMismatch(
+                expected.clone(),
+                wasm_file.sha256_hash.clone(),
+            )
             .into());
         }
     }
@@ -1926,6 +2006,30 @@ pub fn inspect(args: InspectArgs, _verbosity: Verbosity) -> Result<()> {
     }
 
     let info = crate::utils::wasm::get_module_info(&bytes)?;
+    if args.format == OutputFormat::Json {
+        let exported_functions = if args.functions {
+            Some(crate::utils::wasm::parse_function_signatures(&bytes)?)
+        } else {
+            None
+        };
+        let result = serde_json::json!({
+            "contract": args.contract.display().to_string(),
+            "size_bytes": info.total_size,
+            "types": info.type_count,
+            "functions": info.function_count,
+            "exports": info.export_count,
+            "exported_functions": exported_functions,
+        });
+        let envelope = crate::output::VersionedOutput::success("inspect", result);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&envelope).map_err(|e| {
+                DebuggerError::FileError(format!("Failed to serialize inspect JSON output: {}", e))
+            })?
+        );
+        return Ok(());
+    }
+
     println!("Contract: {:?}", args.contract);
     println!("Size: {} bytes", info.total_size);
     println!("Types: {}", info.type_count);
@@ -1957,7 +2061,12 @@ fn inspect_source_map_diagnostics(args: &InspectArgs, wasm_bytes: &[u8]) -> Resu
                 contract: args.contract.display().to_string(),
                 source_map: report,
             };
-            println!("{}", serde_json::to_string_pretty(&output)?);
+            let pretty = serde_json::to_string_pretty(&output).map_err(|e| {
+                DebuggerError::ExecutionError(format!(
+                    "Failed to serialize source-map diagnostics JSON output: {e}"
+                ))
+            })?;
+            println!("{pretty}");
         }
         OutputFormat::Pretty => {
             println!("Source Map Diagnostics");
@@ -1968,8 +2077,15 @@ fn inspect_source_map_diagnostics(args: &InspectArgs, wasm_bytes: &[u8]) -> Resu
 
             println!("\nDWARF sections:");
             for section in &report.sections {
-                let status = if section.present { "present" } else { "missing" };
-                println!("  {}: {} ({} bytes)", section.name, status, section.size_bytes);
+                let status = if section.present {
+                    "present"
+                } else {
+                    "missing"
+                };
+                println!(
+                    "  {}: {} ({} bytes)",
+                    section.name, status, section.size_bytes
+                );
             }
 
             if report.preview.is_empty() {
@@ -2013,7 +2129,7 @@ pub fn symbolic(args: SymbolicArgs, _verbosity: Verbosity) -> Result<()> {
         .with_context(|| format!("Failed to read WASM file: {:?}", args.contract))?;
 
     let analyzer = SymbolicAnalyzer::new();
-    let config = symbolic_config_from_args(&args);
+    let config = symbolic_config_from_args(&args)?;
     let report = analyzer.analyze_with_config(&wasm_file.bytes, &args.function, &config)?;
 
     println!("{}", render_symbolic_report(&report));
@@ -2081,11 +2197,16 @@ pub fn analyze(args: AnalyzeArgs, _verbosity: Verbosity) -> Result<()> {
     }
 
     let analyzer = SecurityAnalyzer::new();
+    let filter = crate::analyzer::security::AnalyzerFilter {
+        enable_rules: args.enable_rule.clone(),
+        disable_rules: args.disable_rule.clone(),
+        min_severity: parse_min_severity(&args.min_severity)?,
+    };
     let report = analyzer.analyze(
         &wasm_file.bytes,
         executor.as_ref(),
         trace_entries.as_deref(),
-        &crate::analyzer::security::AnalyzerFilter::default(),
+        &filter,
     )?;
     let output = AnalyzeCommandOutput {
         findings: report.findings,
@@ -2095,12 +2216,15 @@ pub fn analyze(args: AnalyzeArgs, _verbosity: Verbosity) -> Result<()> {
 
     match args.format.to_lowercase().as_str() {
         "text" => println!("{}", render_security_report(&output)),
-        "json" => println!(
-            "{}",
-            serde_json::to_string_pretty(&output).map_err(|e| {
-                DebuggerError::FileError(format!("Failed to serialize analysis output: {}", e))
-            })?
-        ),
+        "json" => {
+            let envelope = crate::output::VersionedOutput::success("analyze", &output);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&envelope).map_err(|e| {
+                    DebuggerError::FileError(format!("Failed to serialize analysis output: {}", e))
+                })?
+            );
+        }
         other => {
             return Err(DebuggerError::InvalidArguments(format!(
                 "Unsupported --format '{}'. Use 'text' or 'json'.",
@@ -2177,7 +2301,10 @@ pub fn show_budget_trend(
             "Regression params: threshold>{:.1}% lookback={} smoothing={}",
             regression.threshold_pct, regression.lookback, regression.smoothing_window
         );
-        println!("Runs: {}   Range: {} -> {}", stats.count, stats.first_date, stats.last_date);
+        println!(
+            "Runs: {}   Range: {} -> {}",
+            stats.count, stats.first_date, stats.last_date
+        );
         println!(
             "CPU insns: last={}  avg={}  min={}  max={}",
             crate::inspector::budget::BudgetInspector::format_cpu_insns(stats.last_cpu),
@@ -2212,6 +2339,56 @@ pub fn show_budget_trend(
         }
     }
 
+    Ok(())
+}
+
+/// Prune run history according to retention policy.
+pub fn history_prune(args: HistoryPruneArgs) -> Result<()> {
+    let policy = crate::history::RetentionPolicy {
+        max_records: args.max_records,
+        max_age_days: args.max_age_days,
+    };
+
+    if policy.is_empty() {
+        if !Formatter::is_quiet() {
+            println!("No retention policy specified. Use --max-records and/or --max-age-days.");
+        }
+        return Ok(());
+    }
+
+    let manager = HistoryManager::new()?;
+
+    if args.dry_run {
+        let mut records = manager.load_history()?;
+        let before = records.len();
+        HistoryManager::apply_retention(&mut records, &policy);
+        let remaining = records.len();
+        let removed = before.saturating_sub(remaining);
+
+        if !Formatter::is_quiet() {
+            if removed == 0 {
+                println!("[dry-run] Nothing removed ({} records).", remaining);
+            } else {
+                println!(
+                    "[dry-run] Would remove {} record(s). {} record(s) remaining.",
+                    removed, remaining
+                );
+            }
+        }
+        return Ok(());
+    }
+
+    let report = manager.prune_history(&policy)?;
+    if !Formatter::is_quiet() {
+        if report.removed == 0 {
+            println!("Nothing removed ({} records).", report.remaining);
+        } else {
+            println!(
+                "Removed {} record(s). {} record(s) remaining.",
+                report.removed, report.remaining
+            );
+        }
+    }
     Ok(())
 }
 

@@ -1,4 +1,5 @@
 //! Test fixture utilities for loading pre-compiled WASM contracts.
+#![allow(dead_code)]
 
 use serde::Deserialize;
 use std::{
@@ -44,10 +45,20 @@ pub fn manifest_path() -> PathBuf {
 
 pub fn load_manifest() -> FixtureManifest {
     let path = manifest_path();
-    let contents = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("Failed to read fixture manifest from {}: {}", path.display(), e));
-    serde_json::from_str(&contents)
-        .unwrap_or_else(|e| panic!("Failed to parse fixture manifest from {}: {}", path.display(), e))
+    let contents = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!(
+            "Failed to read fixture manifest from {}: {}",
+            path.display(),
+            e
+        )
+    });
+    serde_json::from_str(&contents).unwrap_or_else(|e| {
+        panic!(
+            "Failed to parse fixture manifest from {}: {}",
+            path.display(),
+            e
+        )
+    })
 }
 
 pub fn fixture(name: &str) -> FixtureContract {
@@ -55,7 +66,13 @@ pub fn fixture(name: &str) -> FixtureContract {
         .fixtures
         .into_iter()
         .find(|fixture| fixture.name == name)
-        .unwrap_or_else(|| panic!("Fixture '{}' not found in {}", name, manifest_path().display()))
+        .unwrap_or_else(|| {
+            panic!(
+                "Fixture '{}' not found in {}",
+                name,
+                manifest_path().display()
+            )
+        })
 }
 
 pub fn artifact_path(name: &str, profile: &str) -> PathBuf {
@@ -94,7 +111,12 @@ pub fn artifact_exists(name: &str, profile: &str) -> bool {
 pub fn load_fixture(name: &str) -> Vec<u8> {
     let path = get_fixture_path(name);
     std::fs::read(&path).unwrap_or_else(|e| {
-        panic!("Failed to read fixture '{}' from {}: {}", name, path.display(), e);
+        panic!(
+            "Failed to read fixture '{}' from {}: {}",
+            name,
+            path.display(),
+            e
+        );
     })
 }
 

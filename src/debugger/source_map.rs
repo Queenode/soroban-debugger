@@ -176,7 +176,11 @@ impl SourceMap {
                     message: format!("Failed to load DWARF sections: {}", e),
                 });
                 // We cannot proceed without the main DWARF sections headers successfully parsed
-                return Err(DebuggerError::WasmLoadError(format!("DWARF sections severely malformed: {}", e)).into());
+                return Err(DebuggerError::WasmLoadError(format!(
+                    "DWARF sections severely malformed: {}",
+                    e
+                ))
+                .into());
             }
         };
 
@@ -192,7 +196,7 @@ impl SourceMap {
                     break;
                 }
             };
-            
+
             let unit = match dwarf.unit(header) {
                 Ok(u) => u,
                 Err(e) => {
@@ -202,7 +206,7 @@ impl SourceMap {
                     continue; // try next unit
                 }
             };
-            
+
             if let Some(program) = unit.line_program.clone() {
                 let mut rows = program.rows();
                 loop {
@@ -216,7 +220,7 @@ impl SourceMap {
                             break; // break row iteration for this unit, continue to next unit
                         }
                     };
-                    
+
                     if let Some(file_path) =
                         self.get_file_path(&dwarf, &unit, header, row.file_index())
                     {
@@ -240,7 +244,7 @@ impl SourceMap {
                 }
             } else {
                 self.diagnostics.push(SourceMapDiagnostic {
-                    message: format!("DWARF unit is missing a line program (e.g., .debug_line section data missing or malformed)."),
+                    message: "DWARF unit is missing a line program (e.g., .debug_line section data missing or malformed).".to_string(),
                 });
             }
         }
@@ -250,7 +254,10 @@ impl SourceMap {
         Ok(())
     }
 
-    pub fn inspect_wasm(wasm_bytes: &[u8], preview_limit: usize) -> Result<SourceMapInspectionReport> {
+    pub fn inspect_wasm(
+        wasm_bytes: &[u8],
+        preview_limit: usize,
+    ) -> Result<SourceMapInspectionReport> {
         let section_sizes = dwarf_section_sizes(wasm_bytes)?;
         let sections = DWARF_SECTION_NAMES
             .iter()
@@ -452,6 +459,21 @@ impl SourceMap {
     /// re-parse DWARF even if the bytes are identical to the previous load.
     pub fn invalidate_cache(&mut self) {
         self.last_wasm_hash = None;
+    }
+
+    /// Checks if the given exported function name has any source mappings.
+    pub fn function_has_source_mapped(&self, wasm_bytes: &[u8], exported_function: &str) -> bool {
+        let Ok(wasm_index) = WasmIndex::parse(wasm_bytes) else {
+            return false;
+        };
+        let Some(func_idx) = wasm_index.function_index_for_export(exported_function) else {
+            return false;
+        };
+        let bodies = &wasm_index.function_bodies;
+        let Some((range, _)) = bodies.iter().find(|(_, idx)| *idx == func_idx) else {
+            return false;
+        };
+        self.offsets.range(range.clone()).next().is_some()
     }
 
     /// Resolve source breakpoints for a source file into exported contract functions using DWARF line mappings.
@@ -716,7 +738,10 @@ fn dwarf_section_sizes(wasm_bytes: &[u8]) -> Result<HashMap<String, usize>> {
             .map_err(|e| DebuggerError::WasmLoadError(format!("Failed to parse WASM: {}", e)))?;
         if let Payload::CustomSection(reader) = payload {
             let name = reader.name().to_string();
-            if DWARF_SECTION_NAMES.iter().any(|known| *known == name || known.trim_start_matches('.') == name) {
+            if DWARF_SECTION_NAMES
+                .iter()
+                .any(|known| *known == name || known.trim_start_matches('.') == name)
+            {
                 let normalized = if name.starts_with('.') {
                     name
                 } else {
@@ -936,12 +961,10 @@ mod tests {
 
         assert_eq!(report.mappings_count, 0);
         assert_eq!(report.fallback_mode, "wasm-only");
-        assert!(
-            report
-                .sections
-                .iter()
-                .any(|section| section.name == ".debug_info" && !section.present)
-        );
+        assert!(report
+            .sections
+            .iter()
+            .any(|section| section.name == ".debug_info" && !section.present));
         assert!(report.fallback_message.contains("Missing DWARF sections"));
     }
 
@@ -950,14 +973,12 @@ mod tests {
         let wasm = wasm_with_custom_section(".debug_info", &[1, 2, 3, 4]);
         let report = SourceMap::inspect_wasm(&wasm, 5).unwrap();
 
-        assert!(
-            report
-                .sections
-                .iter()
-                .any(|section| section.name == ".debug_info"
-                    && section.present
-                    && section.size_bytes == 4)
-        );
+        assert!(report
+            .sections
+            .iter()
+            .any(|section| section.name == ".debug_info"
+                && section.present
+                && section.size_bytes == 4));
     }
 
     #[test]

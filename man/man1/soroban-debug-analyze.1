@@ -4,7 +4,7 @@
 .SH NAME
 analyze \- Analyze contract for security vulnerabilities
 .SH SYNOPSIS
-\fBanalyze\fR <\fB\-c\fR|\fB\-\-contract\fR> [\fB\-f\fR|\fB\-\-function\fR] [\fB\-a\fR|\fB\-\-args\fR] [\fB\-s\fR|\fB\-\-storage\fR] [\fB\-\-timeout\fR] [\fB\-\-format\fR] [\fB\-\-waivers\fR] [\fB\-\-show\-suppressed\fR] [\fB\-\-enable\-rule\fR] [\fB\-\-disable\-rule\fR] [\fB\-\-min\-severity\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+\fBanalyze\fR <\fB\-c\fR|\fB\-\-contract\fR> [\fB\-f\fR|\fB\-\-function\fR] [\fB\-a\fR|\fB\-\-args\fR] [\fB\-s\fR|\fB\-\-storage\fR] [\fB\-\-timeout\fR] [\fB\-\-format\fR] [\fB\-\-enable\-rule\fR] [\fB\-\-disable\-rule\fR] [\fB\-\-min\-severity\fR] [\fB\-h\fR|\fB\-\-help\fR] 
 .SH DESCRIPTION
 Analyze contract for security vulnerabilities
 .SH OPTIONS
@@ -21,26 +21,20 @@ Function arguments as JSON array for dynamic analysis (optional)
 \fB\-s\fR, \fB\-\-storage\fR \fI<STORAGE>\fR
 Initial storage state as JSON object (optional)
 .TP
-\fB\-\-timeout\fR \fI<SECONDS>\fR [default: 30]
-Maximum time allowed for dynamic analysis, in seconds. The command exits with a non\-zero status code if this limit is exceeded. Use 0 to disable the timeout
+\fB\-\-timeout\fR \fI<TIMEOUT>\fR [default: 30]
+Execution timeout in seconds for dynamic analysis (default: 30)
 .TP
 \fB\-\-format\fR \fI<FORMAT>\fR [default: text]
 Output format (text, json)
 .TP
-\fB\-\-waivers\fR \fI<WAIVERS>\fR
-Path to the security waivers TOML file (optional)
-.TP
-\fB\-\-show\-suppressed\fR
-Show suppressed findings in the report
-.TP
 \fB\-\-enable\-rule\fR \fI<RULE_ID>\fR
-Filter rules to enable (can be specified multiple times)
+Enable only the specified rule id(s). Repeatable
 .TP
 \fB\-\-disable\-rule\fR \fI<RULE_ID>\fR
-Filter rules to disable (can be specified multiple times)
+Disable the specified rule id(s). Repeatable
 .TP
-\fB\-\-min\-severity\fR \fI<MIN_SEVERITY>\fR [default: low]
-Minimum finding severity to report (low, medium, high)
+\fB\-\-min\-severity\fR \fI<SEVERITY>\fR [default: low]
+Minimum severity to include: low, medium, or high
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help

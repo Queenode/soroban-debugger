@@ -41,10 +41,14 @@ impl DebugServer {
         cert_path: Option<&Path>,
         key_path: Option<&Path>,
     ) -> Result<Self> {
-        let tls_config = if let (Some(cp), Some(kp)) = (cert_path, key_path) {
-            Some(load_tls_config(cp, kp)?)
-        } else {
-            None
+        let tls_config = match (cert_path, key_path) {
+            (Some(cp), Some(kp)) => Some(load_tls_config(cp, kp)?),
+            (None, None) => None,
+            _ => {
+                return Err(miette::miette!(
+                    "TLS not supported unless both certificate and key are provided"
+                ));
+            }
         };
 
         Ok(Self {
@@ -126,7 +130,13 @@ impl DebugServer {
         tokio::spawn(async move {
             let mut writer = writer;
             while let Some(msg) = rx_out.recv().await {
-                if crate::server::protocol::send_response::<tokio::io::WriteHalf<S>>(&mut writer, msg).await.is_err() {
+                if crate::server::protocol::send_response::<tokio::io::WriteHalf<S>>(
+                    &mut writer,
+                    msg,
+                )
+                .await
+                .is_err()
+                {
                     break;
                 }
             }
@@ -141,7 +151,9 @@ impl DebugServer {
             loop {
                 line.clear();
                 let n = reader.read_line(&mut line).await.unwrap_or(0);
-                if n == 0 { break; }
+                if n == 0 {
+                    break;
+                }
 
                 if let Ok(msg) = DebugMessage::parse(line.trim_end()) {
                     if matches!(msg.request, Some(DebugRequest::Cancel)) {
@@ -149,7 +161,9 @@ impl DebugServer {
                         let _ = tx_out_reader.send(response);
                         if is_executing_reader.load(std::sync::atomic::Ordering::SeqCst) {
                             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                            eprintln!("Execution cancelled via request. Aborting with exit code 125.");
+                            eprintln!(
+                                "Execution cancelled via request. Aborting with exit code 125."
+                            );
                             std::process::exit(125);
                         }
                         continue;
@@ -164,7 +178,9 @@ impl DebugServer {
 
         // Helper closure to abstract away tx_out
         let send_msg = |msg: DebugMessage| -> Result<()> {
-            tx_out.send(msg).map_err(|_| miette::miette!("Connection closed"))
+            tx_out
+                .send(msg)
+                .map_err(|_| miette::miette!("Connection closed"))
         };
 
         loop {
@@ -257,6 +273,30 @@ impl DebugServer {
                         return Ok(());
                     }
                 }
+            }
+
+            // Backward compatibility: allow Authenticate before handshake.
+            if let DebugRequest::Authenticate { token } = &request {
+                let success = self
+                    .token
+                    .as_deref()
+                    .map(|server_token| server_token == token)
+                    .unwrap_or(true);
+                authenticated = success;
+                let response = DebugResponse::Authenticated {
+                    success,
+                    message: if success {
+                        "Authentication successful".to_string()
+                    } else {
+                        "Authentication failed".to_string()
+                    },
+                };
+                let response = DebugMessage::response(message.id, response);
+                send_msg(response)?;
+                if !success {
+                    return Ok(());
+                }
+                continue;
             }
 
             if !handshake_done {
@@ -395,20 +435,24 @@ impl DebugServer {
                                             source_location: None,
                                         }
                                     } else {
-                                        { 
-                                        is_executing.store(true, std::sync::atomic::Ordering::SeqCst);
-                                        let r = execute_without_breakpoints(engine, &function, args);
-                                        is_executing.store(false, std::sync::atomic::Ordering::SeqCst);
-                                        r
-                                    }
+                                        {
+                                            is_executing
+                                                .store(true, std::sync::atomic::Ordering::SeqCst);
+                                            let r = execute_without_breakpoints(
+                                                engine, &function, args,
+                                            );
+                                            is_executing
+                                                .store(false, std::sync::atomic::Ordering::SeqCst);
+                                            r
+                                        }
                                     }
                                 }
-                                Ok(None) => { 
-                                        is_executing.store(true, std::sync::atomic::Ordering::SeqCst);
-                                        let r = execute_without_breakpoints(engine, &function, args);
-                                        is_executing.store(false, std::sync::atomic::Ordering::SeqCst);
-                                        r
-                                    },
+                                Ok(None) => {
+                                    is_executing.store(true, std::sync::atomic::Ordering::SeqCst);
+                                    let r = execute_without_breakpoints(engine, &function, args);
+                                    is_executing.store(false, std::sync::atomic::Ordering::SeqCst);
+                                    r
+                                }
                                 Err(e) => DebugResponse::Error {
                                     message: e.to_string(),
                                 },
@@ -418,12 +462,12 @@ impl DebugServer {
                             },
                         }
                     }
-                    Some(engine) => { 
-                                        is_executing.store(true, std::sync::atomic::Ordering::SeqCst);
-                                        let r = execute_without_breakpoints(engine, &function, args);
-                                        is_executing.store(false, std::sync::atomic::Ordering::SeqCst);
-                                        r
-                                    },
+                    Some(engine) => {
+                        is_executing.store(true, std::sync::atomic::Ordering::SeqCst);
+                        let r = execute_without_breakpoints(engine, &function, args);
+                        is_executing.store(false, std::sync::atomic::Ordering::SeqCst);
+                        r
+                    }
                     None => DebugResponse::Error {
                         message: "No contract loaded".to_string(),
                     },
@@ -499,7 +543,7 @@ impl DebugServer {
                                     )
                                 })
                                 .unwrap_or((None, 0));
-                            match {
+                            let exec_result = {
                                 is_executing.store(true, std::sync::atomic::Ordering::SeqCst);
                                 let r = engine.execute_without_breakpoints(
                                     &pending.function,
@@ -507,7 +551,8 @@ impl DebugServer {
                                 );
                                 is_executing.store(false, std::sync::atomic::Ordering::SeqCst);
                                 r
-                            } {
+                            };
+                            match exec_result {
                                 Ok(_) => DebugResponse::StepResult {
                                     paused: false,
                                     current_function,
@@ -571,7 +616,7 @@ impl DebugServer {
                 DebugRequest::Continue => match self.engine.as_mut() {
                     Some(engine) => {
                         if let Some(pending) = self.pending_execution.take() {
-                            match {
+                            let exec_result = {
                                 is_executing.store(true, std::sync::atomic::Ordering::SeqCst);
                                 let r = engine.execute_without_breakpoints(
                                     &pending.function,
@@ -579,7 +624,8 @@ impl DebugServer {
                                 );
                                 is_executing.store(false, std::sync::atomic::Ordering::SeqCst);
                                 r
-                            } {
+                            };
+                            match exec_result {
                                 Ok(output) => DebugResponse::ContinueResult {
                                     completed: true,
                                     output: Some(output),
@@ -990,22 +1036,15 @@ async fn setup_signal_handlers(shutdown: Arc<Notify>) {
         use tokio::signal::unix::{signal, SignalKind};
         let mut sigterm = signal(SignalKind::terminate()).expect("Failed to setup SIGTERM handler");
 
-        loop {
-            tokio::select! {
-                _ = &mut ctrl_c => {
-                    info!("Received SIGINT, initiating shutdown");
-                    break;
-                }
-                _ = sigterm.recv() => {
-                    info!("Received SIGTERM, initiating shutdown");
-                    break;
-                }
+        tokio::select! {
+            _ = &mut ctrl_c => {
+                info!("Received SIGINT, initiating shutdown");
+            }
+            _ = sigterm.recv() => {
+                info!("Received SIGTERM, initiating shutdown");
             }
         }
     }
-
-    #[cfg(not(not(unix)))]
-    {} // This was part of a logic experiment, ignoring
 
     #[cfg(not(unix))]
     {
@@ -1045,23 +1084,21 @@ mod tests {
         let shutdown = server.shutdown.clone();
 
         let local = tokio::task::LocalSet::new();
-        local.run_until(async move {
-            let server_task = tokio::task::spawn_local(async move {
-                let _ = server.run(0).await;
-            });
+        local
+            .run_until(async move {
+                let server_task = tokio::task::spawn_local(async move {
+                    let _ = server.run(0).await;
+                });
 
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-            shutdown.notify_one();
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                shutdown.notify_one();
 
-            tokio::time::timeout(
-                tokio::time::Duration::from_secs(5),
-                server_task,
-            )
-            .await
-            .expect("Server shutdown timed out")
-            .expect("Server task panicked");
-        })
-        .await;
+                tokio::time::timeout(tokio::time::Duration::from_secs(5), server_task)
+                    .await
+                    .expect("Server shutdown timed out")
+                    .expect("Server task panicked");
+            })
+            .await;
     }
 
     #[test]
@@ -1075,9 +1112,8 @@ mod tests {
     #[test]
     fn test_server_with_token() {
         let token = "test-token-12345678".to_string();
-        let server = DebugServer::new(Some(token.clone()), None, None)
-            .expect("Failed to create server");
+        let server =
+            DebugServer::new(Some(token.clone()), None, None).expect("Failed to create server");
         assert_eq!(server.token, Some(token));
     }
 }
-

@@ -750,7 +750,10 @@ fn render_execution(f: &mut Frame, app: &mut DashboardApp, area: Rect) {
             let col = loc.column.map(|c| format!(":{}", c)).unwrap_or_default();
             lines.push(Line::from(vec![
                 Span::styled("Paused at: ", Style::default().fg(COLOR_TEXT_DIM)),
-                Span::styled(format!("{}:{}{}", file, line, col), Style::default().fg(COLOR_YELLOW)),
+                Span::styled(
+                    format!("{}:{}{}", file, line, col),
+                    Style::default().fg(COLOR_YELLOW),
+                ),
             ]));
         }
     }

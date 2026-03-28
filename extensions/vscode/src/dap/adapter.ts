@@ -19,6 +19,43 @@ import { ResolvedBreakpoint, resolveSourceBreakpoints } from './sourceBreakpoint
 import { LogOutputEvent, LogLevel } from '@vscode/debugadapter/lib/logger';
 import { LogManager, LogLevel as ManagerLogLevel, LogPhase } from '../debug/logManager';
 
+
+
+/** Structured error types from the runtime */
+interface TimeoutError {
+  type: 'timeout';
+  elapsed_ms: number;
+  limit_ms: number;
+}
+
+interface CancellationError {
+  type: 'cancelled';
+  reason: string;
+}
+
+type StructuredRuntimeError = TimeoutError | CancellationError | { type: 'other'; message: string };
+
+function parseRuntimeError(error: unknown): StructuredRuntimeError {
+  if (typeof error === 'object' && error !== null) {
+    const err = error as Record<string, unknown>;
+    if (err.type === 'timeout' || err.Timeout) {
+      const timeout = (err.Timeout as Record<string, number>) ?? err;
+      return {
+        type: 'timeout',
+        elapsed_ms: timeout.elapsed_ms ?? 0,
+        limit_ms: timeout.limit_ms ?? 0,
+      };
+    }
+    if (err.type === 'cancelled' || err.Cancelled) {
+      const cancelled = (err.Cancelled as Record<string, string>) ?? err;
+      return {
+        type: 'cancelled',
+        reason: cancelled.reason ?? 'unknown',
+      };
+    }
+  }
+  return { type: 'other', message: String(error) };
+}
 type LaunchRequestArgs = DebugProtocol.LaunchRequestArguments & DebuggerProcessConfig;
 
 export class SorobanDebugSession extends DebugSession {
@@ -198,7 +235,7 @@ export class SorobanDebugSession extends DebugSession {
         source,
         managedBreakpoints.filter((bp) => {
           const match = resolved.find((resolvedBreakpoint) => resolvedBreakpoint.line === bp.line);
-          return Boolean(match?.verified && bp.functionName);
+          return Boolean(match?.setBreakpoint && bp.functionName);
         })
       );
       const syncMessage = syncErrors.size > 0
@@ -349,6 +386,58 @@ export class SorobanDebugSession extends DebugSession {
         return;
       }
 
+      if (expression.startsWith('storage.search ')) {
+        const query = expression.slice('storage.search '.length).trim();
+        if (!query) {
+          throw new Error('Usage: storage.search <query>');
+        }
+        const storageData = this.state.storage as Record<string, unknown> ?? {};
+        const searchResult = this.variableStore.searchStorage(storageData, query);
+        const matchVars = searchResult.variables;
+        const ref = matchVars.length > 0
+          ? this.variableStore.createListHandle(matchVars)
+          : 0;
+        const summary = searchResult.truncated
+          ? `Found ${searchResult.totalMatches} matches (showing first ${matchVars.length})`
+          : `Found ${searchResult.totalMatches} match(es)`;
+        response.body = {
+          result: summary,
+          variablesReference: ref
+        };
+        this.sendResponse(response);
+        return;
+      }
+
+      if (expression.startsWith('storage.page ')) {
+        const pageStr = expression.slice('storage.page '.length).trim();
+        const pageNum = parseInt(pageStr, 10);
+        if (isNaN(pageNum) || pageNum < 1) {
+          throw new Error('Usage: storage.page <number> (1-based)');
+        }
+        const storageData = this.state.storage as Record<string, unknown> ?? {};
+        const pageResult = this.variableStore.pagedStorage(storageData, pageNum - 1);
+        const ref = pageResult.variables.length > 0
+          ? this.variableStore.createListHandle(pageResult.variables)
+          : 0;
+        response.body = {
+          result: `Page ${pageResult.page + 1}/${pageResult.totalPages} (${pageResult.totalEntries} total entries)`,
+          variablesReference: ref
+        };
+        this.sendResponse(response);
+        return;
+      }
+
+      if (expression === 'storage.count') {
+        const storageData = this.state.storage as Record<string, unknown> ?? {};
+        const count = Object.keys(storageData).length;
+        response.body = {
+          result: `${count} storage entries`,
+          variablesReference: 0
+        };
+        this.sendResponse(response);
+        return;
+      }
+
       if (expression.startsWith('storage.')) {
         const key = expression.slice('storage.'.length);
         const value = this.state.storage ? (this.state.storage as Record<string, unknown>)[key] : undefined;
@@ -409,7 +498,7 @@ export class SorobanDebugSession extends DebugSession {
       this.sendResponse(response);
 
       if (!this.hasExecuted) {
-        await this.runExecution('step');
+        await this.runExecution('breakpoint');
         return;
       }
 
@@ -762,5 +851,16 @@ export class SorobanDebugSession extends DebugSession {
     }
 
     return notices.length > 0 ? notices.join(' ') : undefined;
+  }
+}
+
+function formatDapError(error: StructuredRuntimeError): string {
+  switch (error.type) {
+    case 'timeout':
+      return `Execution timed out after ${error.elapsed_ms}ms (limit: ${error.limit_ms}ms). Consider increasing the timeout in your launch configuration.`;
+    case 'cancelled':
+      return `Execution cancelled: ${error.reason}`;
+    case 'other':
+      return error.message;
   }
 }

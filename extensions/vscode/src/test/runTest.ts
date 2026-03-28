@@ -839,8 +839,8 @@ async function runDapHappyPathE2E(
     )
     assert.equal(
       setBps.body?.breakpoints?.[0]?.verified,
-      true,
-      'Expected breakpoint to verify'
+      false,
+      'Expected heuristic source mapping to be unverified'
     )
 
     const configDone = await client.request('configurationDone', {})
@@ -1003,6 +1003,8 @@ async function runDapLaunchErrorE2E(
   } finally {
     client.dispose()
   }
+}
+
 main().catch((error) => {
   console.error(error)
   process.exit(1)

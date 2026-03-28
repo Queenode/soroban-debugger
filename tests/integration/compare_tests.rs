@@ -4,8 +4,8 @@
 //! disk, loading them via `ExecutionTrace::from_file`, running the
 //! comparison engine, and verifying the report output.
 
-use soroban_debugger::compare::{CompareEngine, ExecutionTrace};
 use soroban_debugger::compare::engine::CompareFilters;
+use soroban_debugger::compare::{CompareEngine, ExecutionTrace};
 use std::io::Write;
 use tempfile::NamedTempFile;
 

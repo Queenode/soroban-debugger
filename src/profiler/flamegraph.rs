@@ -1,8 +1,7 @@
 use crate::profiler::analyzer::OptimizationReport;
 use crate::Result;
-use std::collections::HashMap;
-use std::path::Path;
 use std::fmt::Write as _;
+use std::path::Path;
 
 #[derive(Debug, Clone)]
 pub struct FlameGraphStack {
@@ -127,6 +126,7 @@ impl FlameGraphGenerator {
 mod tests {
     use super::*;
     use crate::profiler::analyzer::FunctionProfile;
+    use std::collections::HashMap;
 
     fn create_test_report() -> OptimizationReport {
         OptimizationReport {

@@ -928,11 +928,8 @@ mod tests {
             "meta": { "timestamp": 200, "seq": 2 }
         }));
 
-        let report = CompareEngine::compare_with_filters(
-            &a,
-            &b,
-            &filters(&[], &["timestamp", "seq"]),
-        );
+        let report =
+            CompareEngine::compare_with_filters(&a, &b, &filters(&[], &["timestamp", "seq"]));
 
         assert!(report.return_value_diff.equal);
     }

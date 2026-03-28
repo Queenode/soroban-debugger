@@ -128,8 +128,18 @@ impl PluginSnapshot {
             name: manifest.name.clone(),
             version: manifest.version.clone(),
             capabilities: manifest.capabilities.clone(),
-            commands: plugin.plugin().commands().iter().map(|c| c.name.clone()).collect(),
-            formatters: plugin.plugin().formatters().iter().map(|f| f.name.clone()).collect(),
+            commands: plugin
+                .plugin()
+                .commands()
+                .iter()
+                .map(|c| c.name.clone())
+                .collect(),
+            formatters: plugin
+                .plugin()
+                .formatters()
+                .iter()
+                .map(|f| f.name.clone())
+                .collect(),
             dependencies: manifest.dependencies.clone(),
         }
     }
@@ -186,14 +196,21 @@ impl PluginReloadDiff {
         let old_commands: HashSet<_> = old.commands.iter().cloned().collect();
         let new_commands: HashSet<_> = new.commands.iter().cloned().collect();
         let mut commands_added: Vec<_> = new_commands.difference(&old_commands).cloned().collect();
-        let mut commands_removed: Vec<_> = old_commands.difference(&new_commands).cloned().collect();
+        let mut commands_removed: Vec<_> =
+            old_commands.difference(&new_commands).cloned().collect();
         commands_added.sort();
         commands_removed.sort();
 
         let old_formatters: HashSet<_> = old.formatters.iter().cloned().collect();
         let new_formatters: HashSet<_> = new.formatters.iter().cloned().collect();
-        let mut formatters_added: Vec<_> = new_formatters.difference(&old_formatters).cloned().collect();
-        let mut formatters_removed: Vec<_> = old_formatters.difference(&new_formatters).cloned().collect();
+        let mut formatters_added: Vec<_> = new_formatters
+            .difference(&old_formatters)
+            .cloned()
+            .collect();
+        let mut formatters_removed: Vec<_> = old_formatters
+            .difference(&new_formatters)
+            .cloned()
+            .collect();
         formatters_added.sort();
         formatters_removed.sort();
 
@@ -249,24 +266,42 @@ impl PluginReloadDiff {
         }
 
         if !self.commands_added.is_empty() {
-            lines.push(format!("  Commands added: {}", self.commands_added.join(", ")));
+            lines.push(format!(
+                "  Commands added: {}",
+                self.commands_added.join(", ")
+            ));
         }
         if !self.commands_removed.is_empty() {
-            lines.push(format!("  Commands removed: {}", self.commands_removed.join(", ")));
+            lines.push(format!(
+                "  Commands removed: {}",
+                self.commands_removed.join(", ")
+            ));
         }
 
         if !self.formatters_added.is_empty() {
-            lines.push(format!("  Formatters added: {}", self.formatters_added.join(", ")));
+            lines.push(format!(
+                "  Formatters added: {}",
+                self.formatters_added.join(", ")
+            ));
         }
         if !self.formatters_removed.is_empty() {
-            lines.push(format!("  Formatters removed: {}", self.formatters_removed.join(", ")));
+            lines.push(format!(
+                "  Formatters removed: {}",
+                self.formatters_removed.join(", ")
+            ));
         }
 
         if !self.dependencies_added.is_empty() {
-            lines.push(format!("  Dependencies added: {}", self.dependencies_added.join(", ")));
+            lines.push(format!(
+                "  Dependencies added: {}",
+                self.dependencies_added.join(", ")
+            ));
         }
         if !self.dependencies_removed.is_empty() {
-            lines.push(format!("  Dependencies removed: {}", self.dependencies_removed.join(", ")));
+            lines.push(format!(
+                "  Dependencies removed: {}",
+                self.dependencies_removed.join(", ")
+            ));
         }
 
         lines.join("\n")
@@ -905,7 +940,6 @@ impl PluginRegistry {
                 timeout: self.policy.hook_timeout,
                 elapsed: start.elapsed(),
             },
-
             result.map_err(|_| {
                 PluginError::ExecutionFailed("Plugin panicked during hook execution".to_string())
             }),
@@ -945,7 +979,6 @@ impl PluginRegistry {
                 timeout: self.policy.command_timeout,
                 elapsed: start.elapsed(),
             },
-
             result.map_err(|_| {
                 PluginError::ExecutionFailed("Plugin panicked during command execution".to_string())
             }),
@@ -985,7 +1018,6 @@ impl PluginRegistry {
                 timeout: self.policy.formatter_timeout,
                 elapsed: start.elapsed(),
             },
-
             result.map_err(|_| {
                 PluginError::ExecutionFailed(
                     "Plugin panicked during formatter execution".to_string(),
@@ -1003,7 +1035,6 @@ impl PluginRegistry {
     ) -> PluginResult<T> {
         let state = health.entry(meta.name.to_string()).or_default();
 
-
         match result {
             Err(err) => {
                 state.total_panics += 1;
@@ -1014,7 +1045,6 @@ impl PluginRegistry {
                     state.circuit_open = true;
                 }
                 if let Some(ctx) = context {
-
                     Self::push_telemetry(
                         ctx,
                         meta.name,
@@ -1034,7 +1064,6 @@ impl PluginRegistry {
                     state.circuit_open = true;
                 }
                 if let Some(ctx) = context {
-
                     Self::push_telemetry(
                         ctx,
                         meta.name,
@@ -1047,7 +1076,6 @@ impl PluginRegistry {
                 Err(err)
             }
             Ok(Ok(value)) if meta.elapsed > meta.timeout => {
-
                 state.total_timeouts += 1;
                 state.total_failures += 1;
                 state.timeout_count += 1;
@@ -1063,7 +1091,6 @@ impl PluginRegistry {
                     state.circuit_open = true;
                 }
                 if let Some(ctx) = context {
-
                     Self::push_telemetry(
                         ctx,
                         meta.name,
@@ -1081,7 +1108,6 @@ impl PluginRegistry {
                 state.circuit_open = false;
                 state.last_error = None;
                 if let Some(ctx) = context {
-
                     Self::push_telemetry(
                         ctx,
                         meta.name,
@@ -1621,7 +1647,10 @@ mod tests {
 
         let diff = PluginReloadDiff::compute(&old, &new);
         assert!(diff.has_changes());
-        assert_eq!(diff.version_changed, Some(("1.0.0".to_string(), "1.1.0".to_string())));
+        assert_eq!(
+            diff.version_changed,
+            Some(("1.0.0".to_string(), "1.1.0".to_string()))
+        );
         assert!(diff.summary().contains("Version: 1.0.0 → 1.1.0"));
     }
 
@@ -1653,8 +1682,14 @@ mod tests {
         let diff = PluginReloadDiff::compute(&old, &new);
         assert!(diff.has_changes());
         assert_eq!(diff.capabilities_changed.len(), 2);
-        assert!(diff.capabilities_changed.iter().any(|c| c.contains("provides_commands")));
-        assert!(diff.capabilities_changed.iter().any(|c| c.contains("supports_hot_reload")));
+        assert!(diff
+            .capabilities_changed
+            .iter()
+            .any(|c| c.contains("provides_commands")));
+        assert!(diff
+            .capabilities_changed
+            .iter()
+            .any(|c| c.contains("supports_hot_reload")));
     }
 
     #[test]
